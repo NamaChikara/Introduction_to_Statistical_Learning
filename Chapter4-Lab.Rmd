@@ -1,0 +1,418 @@
+---
+title: "Chapter 4 - Lab"
+author: "ZackBarry"
+date: "6/27/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ISLR)
+library(dplyr)
+library(ggplot2)
+library(MASS) # for lda()
+library(class) # for knn()
+library(MVN)  # for checking for multivariate normal distributions
+# ^ need to install jags directly from 
+#    https://sourceforge.net/projects/mcmc-jags/files/JAGS/4.x/Mac%20OS%20X/
+#   before installing MVN
+
+select <- dplyr::select # avoid namespace collision with MASS
+filter <- dplyr::filter  
+```
+
+## The data
+```{r}
+names(Smarket)
+```
+
+```{r}
+dim(Smarket)
+```
+```{r}
+summary(Smarket)
+```
+
+### Check for any correlated predictors.
+Remember to remove qualitative predictors.
+```{r}
+cor(select(Smarket, -Direction))
+```
+Volume and year are moderately correlated, but the other variables are only very weakly
+correlated.
+
+```{r}
+ggplot(Smarket, aes(x = Year, y = Volume)) + 
+  geom_point()
+```
+Volume seems to be trending up over the years.
+
+## Logistic regression
+
+Run a logistic regression to predict `Direction` based on `Lag1` through `Lag5`, 
+and `Volume`.  We can do this using `glm()` with the option `family = binomial`.
+
+```{r}
+logistic.fit <- glm(
+  Direction ~ Lag1 + Lag2 + Lag3 + Lag4 + Lag5 + Volume,
+  data = Smarket,
+  family = binomial
+  )
+summary(logistic.fit)
+```
+
+The p-values for each of the predictors' coefficients are quite high, and 
+the standard error for most of them is such that $(coeff - std.error, coeff]$ 
+contains 0.
+
+Let's create a confusion matrix which will show us how many false postives and
+false negatives were assigned.  Note that if no data set is passed to `predict()`,
+then it computes probabilities for the training set.  Adding `type = "response"`
+asks R to output probabilities of the form $P(Y = 1 | X)$.
+```{r}
+predictions <- predict(logistic.fit, type = "response")
+
+up_down_predictions <- rep("Down", length(predictions))
+up_down_predictions[predictions > 0.5] <- "Up"
+
+table(up_down_predictions, Smarket$Direction)
+
+mean(up_down_predictions == Smarket$Direction)  # Success rate
+```
+So we have a 52.2% success rate, or a 47.8% error rate.  However, these values
+were calculated for the training set. We need to split the data into training
+and test sets in order to get a more realistic error rate.
+
+### Train and test
+
+Let's get an idea of the distribution of our data:
+```{r}
+count(Smarket, Year) 
+```
+
+Split 60% of the data into a training set -- years 2001-2003. The rest will
+go into a testing set.
+```{r}
+train <- filter(Smarket, Year <= 2003)
+test <- filter(Smarket, Year > 2003)
+```
+
+Fit the model on the training set:
+```{r}
+logistic.fit_2 <- glm(
+  Direction ~ Lag1 + Lag2 + Lag3 + Lag4 + Lag5 + Volume, 
+  data = Smarket,
+  family = "binomial"
+)
+summary(logistic.fit_2)
+```
+Similarly poor p values. `Lag1` has the lowest p value; since its coefficient
+is negative, this means that if the market increased the previous day it tends
+to decrease today.
+
+Lets see how it performs on the test set:
+```{r}
+predicted_test <- predict(logistic.fit_2, test, type = "response")
+
+up_down_test <- rep("Down", length(predicted_test))
+up_down_test[predicted_test > 0.5] <- "Up"
+
+table(up_down_test, test$Direction)
+mean(up_down_test != test$Direction)
+```
+We have improved to a 43.5% error rate on the test set! Notice that the error
+rate on predicted Up days is lower than predicting Down days:
+```{r}
+100 * round(196 / (196 + 258), 2)
+```
+
+### Repeat with only Lag1 and Lag2 as predictors.
+
+```{r}
+logistic.fit_3 <- glm(Direction ~ Lag1 + Lag2, family = "binomial", data = Smarket)
+predicted_test <- predict(logistic.fit_3, filter(Smarket, Year >= 2004), type = "response")
+
+up_down_test <- rep("Down", length(predicted_test))
+up_down_test[predicted_test > 0.5] <- "Up"
+
+table(up_down_test, filter(Smarket, Year >= 2004)$Direction)
+mean(up_down_test != filter(Smarket, Year >= 2004)$Direction)
+```
+The model actually improved in fit!
+
+## Linear Discriminant Analysis (LDA)
+
+### Check covariance assumption.
+
+Recall that LDA assumes that the covariance matrices of the predictors are
+approximately the same for each of the response values:
+```{r}
+covDown <- Smarket %>%
+  filter(Direction == "Down") %>%
+  select(Lag1, Lag2, Lag3, Lag4, Lag5, Volume) %>%
+  cov()
+
+covUp <- Smarket %>%
+  filter(Direction == "Up") %>%
+  select(Lag1, Lag2, Lag3, Lag4, Lag5, Volume) %>%
+  cov()
+
+abs(covDown - covUp) / max(covDown, covUp)
+```
+All values are within 10% of one another -- the assumption is nearly valid.
+
+### Check MVN assumption.
+
+Now check for multivariate normal distribution assumption using the vignette for
+`MVN` as a guide (https://cran.r-project.org/web/packages/MVN/vignettes/MVN.pdf).
+First, a visual inspection of the distributions of the dependent variables:
+```{r}
+result <- Smarket %>%
+  select(Lag1, Lag2, Lag3, Lag4, Lag5, Volume) %>%
+  mvn(mvnTest = "royston", multivariatePlot = "qq", univariatePlot = "histogram")
+
+result$multivariateNormality
+result$univariateNormality
+```
+Recall that a Q-Q plot (the ordered Mahalanobis distance vs. the estimated quantiles)
+should be a straight line for data from a multivariate normal distribution.  This
+Q-Q plot is clearly not linear, indicating that the MVN assumption is not satisfied.
+
+Consider also the histogram plots of the six dependent variables against the
+normal distributions given the mean and standard deviation of that variable.
+In all cases for the `Lag` variables, the histograms appear to match the normal 
+distributions, but the univariate normality results above indicate that their
+distributions are not normal.  Let's look at their Q-Q plots:
+
+```{r}
+ggplot(Smarket, aes(sample = Lag1)) +
+  stat_qq() +
+  stat_qq_line() 
+ggplot(Smarket, aes(sample = Lag2)) +
+  stat_qq() + 
+  stat_qq_line()
+ggplot(Smarket, aes(sample = Lag3)) +
+  stat_qq() + 
+  stat_qq_line()
+ggplot(Smarket, aes(sample = Lag3)) +
+  stat_qq() + 
+  stat_qq_line()
+```
+Normal Q-Q plots that fall along a line in the middle of the graph, but curve
+off in the extremeties usually indicate that the data has more extreme values
+than would be expected if it truly came from a normal distribution.
+
+### Train and test.
+Data sets `train` and `test` were created during the logistic regression analysis
+by splitting the `Smarket` at `2004`:
+```{r}
+train <- filter(Smarket, Year < 2004)
+test <- filter(Smarket, Year >= 2004)
+```
+
+
+### Create LDA model from training data.
+
+The syntax for `lda()` is the same as `lm()` and `glm()`:
+```{r}
+lda.fit <- lda(Direction ~ Lag1 + Lag2, data = train)
+lda.fit
+```
+The prior probabilities indicate that 50.8% of the training observations correspond
+to days during which the market went up.  Conversely, the prior probability of the
+`Up` group indicates that 49.2% of the training observations correspond to days 
+during which the market went down.
+
+Consider the `Up` row from the group means table.  The values in `(Up, Lag1)` 
+and `(Up, Lag2)` are the averages of the `Lag1` and `Lag2` values from the training 
+observations from days during which the market went up.  Since both values are 
+negative, this indicates that on days when the market went up the previous two days 
+saw market declines.  Conversely, the mean values of `Lag1` and `Lag2` from days 
+when the training observations have decreases in the market indicate that market 
+decreases are, on average, preceeded by two days of market increases.
+
+Lastly, the coefficients of linear discriminants are used to specify the linear
+combination of `Lag1` and `Lag2` that are used to form the LDA decision rule.
+Before writing down the rule, we should double check how R factors the Direction
+values:
+```{r}
+contrasts(Smarket$Direction)
+```
+Since `Up` is coded as 1, a positive value for the LDA combination indicates a 
+prediction of `Up`.  The LDA rule is $LDA(Lag1, Lag2) = -0.592\times Lag1 - 0.448 \times Lag2$.
+
+### Predict response for one new data point.
+
+Before applying the model to the whole test set, let's understand the output from
+one new data point:
+```{r}
+lda.pred <- predict(lda.fit, data.frame(Lag1 = 0.4, Lag2 = 0.01))
+lda.pred
+```
+The `class` value is the result predicted by the model.  It makes sense that the
+value in this case is `Down` since we saw that in the training data set, two days 
+of market increases were most often followed by a market drop.  Columns in the
+`posterior` table contain the posterior probabilities (as calculated by Bayes' theorem) 
+that the corresponding observation belongs to that column's class.  In this case,
+the posterior probability of the first (and only observation) indicates that it
+most likely came from the `Down` class.  Finally, `x` contains the linear discriminants.
+Since it is negative for our data, this indicates the model predicts a response
+of `Down`.
+
+### Predict responses for test data.
+
+First, calculate the predictions:
+```{r}
+lda.pred <- predict(lda.fit, test)
+head(lda.pred$class)
+head(lda.pred$posterior)
+```
+
+Next, compare the predictions to the true values:
+```{r}
+table(lda.pred$class, test$Direction)
+mean(lda.pred$class == test$Direction)
+```
+We have a `r (1 - 0.468) * 100`% testing error rate -- this is worse than if
+we had just guessed `Up` for every set of predictors.  
+
+### Conclusion
+Recall the results obtained via logistic regression on the same train/test sets:
+```{r}
+table(up_down_test, test$Direction)
+mean(up_down_test == test$Direction)
+```
+These are much better than the LDA results.  This is not necessarily suprising - 
+recall that LDA assumes that the predictors follow a multivariate normal distribution
+while Logistic Regression does not make that assumption.  Since it was shown above
+that `Lag1` and `Lag2` were not normally distributed (much less multivariately
+normally distributed), the assumptions of LDA were not met.
+
+
+## Quadratic Discriminant Analysis (QDA)
+
+### Fit the model.
+QDA is applied in the same way as LDA:
+```{r}
+qda.fit <- qda(Direction ~ Lag1 + Lag2, data = train)
+qda.fit
+```
+The prior probabilities and group means are the same as the `lda()` case - this
+is as expected since those values do not depend on the model chosen.  Note that
+the coefficients of the linear discriminants are not printed because the QDA
+classifier involves a quadratic function of the predictors.
+
+### Evaluate performance.
+
+```{r}
+qda.test.result <- predict(qda.fit, test)
+table(qda.test.result$class, test$Direction)
+mean(qda.test.result$class == test$Direction)
+```
+
+## K Nearest Neighbors (KNN)
+
+We will use the function `class::knn()`.  Arguments required are 
+
+* train: a matrix or data frame of training set cases
+* test: a matrix or data frame of test set cases
+* cl: a vector containing the true class labels for training observations
+* k: the number of nearest neighbors used
+
+### Create arguments.
+
+Again, we will split train and test along the year 2003:
+```{r}
+knn.train <- Smarket %>%
+  filter(Year <= 2003) %>%
+  select(Lag1, Lag2) %>%
+  as.matrix()
+
+knn.test <- Smarket %>%
+  filter(Year > 2003) %>%
+  select(Lag1, Lag2) %>%
+  as.matrix()
+
+knn.cl <- Smarket %>%
+  filter(Year <= 2003) %>%
+  select(Direction) %>%
+  as.matrix()
+
+knn.test.cl <- Smarket %>%
+  filter(Year > 2003) %>%
+  select(Direction) %>%
+  as.matrix()
+```
+
+### Fit the model and test for different K.
+
+Start with $K = 1$:
+```{r}
+knn.1 <- knn(
+  train = knn.train, 
+  test = knn.test, 
+  cl = knn.cl, 
+  k = 1
+)
+table(knn.1, knn.test.cl)
+mean(knn.1 != knn.test.cl)
+```
+With $K=1$, the model is only 50% accurate.  False positives appear less often
+than false negatives.
+
+Let's try $K = 2$:
+```{r}
+knn.2 <- knn(
+  knn.train,
+  knn.test,
+  knn.cl,
+  k = 2
+)
+table(knn.2, knn.test.cl)
+mean(knn.2 != knn.test.cl)
+```
+Now we have a 49.2% error rate - slightly better than guessing!
+
+Let's try $K = 3$:
+```{r}
+knn.3 <- knn(
+  knn.train,
+  knn.test,
+  knn.cl,
+  k = 3
+)
+table(knn.3, knn.test.cl)
+mean(knn.3 != knn.test.cl)
+```
+Decrease in accuracy from the $K=2$ case.
+
+
+## Conclusions.
+
+In order of accuracy on the test set, the models rank in the following order:
+
+1. Logistic Regression (43.85% error rate)
+2. KNN, K = 2 (49.2% error rate)
+3. LDA (53.2% error rate)
+4. QDA (54% error rate)
+
+Recall that LDA and QDA are meant to improve on Logistic Regression when
+(a) the classes are well-separated, (b) $n$ is small and each of the predictors
+is normally distributed, (c) there are more than two response cases.  For the
+Smarket data, (a) does not hold:
+```{r}
+ggplot(Smarket, aes(x = Lag1, y = Lag2, color = Direction)) + geom_point()
+```
+Also, (b) does not hold since the training set was large ($ n > 500$) and the
+predictors were not normally distributed.  Thus, we would expect Logistic Regression
+to outperform LDA and QDA.
+
+
+
+
+
+
+
+
+
+
