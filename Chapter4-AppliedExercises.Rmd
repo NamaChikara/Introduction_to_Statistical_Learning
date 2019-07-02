@@ -1,0 +1,316 @@
+---
+title: "Chapter 4 - Applied Exercises"
+author: "ZackBarry"
+date: "7/2/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ISLR)
+library(dplyr)
+library(ggplot2)
+library(MASS) # for lda()
+library(class) # for knn()
+library(pROC) # for roc()
+library(MVN)  # for checking for multivariate normal distributions
+# ^ need to install jags directly from 
+#    https://sourceforge.net/projects/mcmc-jags/files/JAGS/4.x/Mac%20OS%20X/
+#   before installing MVN
+
+select <- dplyr::select # avoid namespace collision with MASS
+filter <- dplyr::filter  
+```
+
+## 10) Logistic vs. LDA vs. QDA vs. KNN on ISLR::Weekly
+
+The `Weekly` data set includes "weekly percentage returns for the S&P 500 stock
+index between 1990 and 2010".
+```{r}
+head(Weekly)
+```
+Let's make sure each year has all 52 observations:
+```{r}
+count(Weekly, Year)
+```
+1990 is missing 5 weeks; these are likely the first 5 weeks since `Lag5` on the
+5th week is the percentage return for the previous 5 weeks (i.e. since the start
+of 1990). Let's add a column which includes the week number:
+```{r}
+Weekly <- Weekly %>%
+  group_by(Year) %>%
+  mutate(Week = row_number()) %>%
+  ungroup() %>%
+  mutate(Week = ifelse(Year == 1990, Week + 5, Week))
+head(Weekly)
+```
+
+**a)** Produce some numerical and graphical summaries of the `Weekly` data.
+Do there appear to be any patterns?
+
+First, let's look at the average values for the numeric variables within each
+year; for the categorical variable `Direction` we calculate the fraction
+of weeks which generated a positiv return:
+```{r}
+Weekly.summary <- Weekly %>%
+  group_by(Year) %>%
+  summarise(
+    Lag1 = mean(Lag1), 
+    Lag2 = mean(Lag2),
+    Lag3 = mean(Lag3),
+    Lag4 = mean(Lag4), 
+    Lag5 = mean(Lag5),
+    Direction = mean(Direction == "Up"),
+    Volume = mean(Volume)
+  )
+head(Weekly.summary, 3)
+tail(Weekly.summary, 3)
+```
+`Volume`, the average number of daily shares traded in billions) trends
+upwards as time goes on. The average number of weeks with positive returns within
+a given year has no obvious trend from the observations printed above. We do
+notice that in 2008, the year of the global market crash, all the average `Lag` 
+values are negative and less than half the weeks had positive returns.  
+
+Let's look at a plot of some of these values over time to see if any more trends
+stick out:
+```{r}
+ggplot(Weekly.summary, aes(x = Year)) +
+  geom_line(aes(y = Lag1, color = "Lag1")) +
+  geom_line(aes(y = Lag2, color = "Lag2")) +
+  geom_hline(aes(yintercept = mean(Weekly.summary$Lag1), color = "AvgLag1")) +
+  scale_color_manual(
+    "Percentage Return",
+    values = c("Lag1" = "red", "Lag2" = "blue", "AvgLag1" = "black")
+  ) +
+  scale_y_continuous("")
+```
+The average weekly returns oscillate around the mean value of `r mean(Weekly.summary$Lag1)`.
+This indicates that linear regression would not be a good fit for predicting
+future `Lag1` and `Lag2` values. How about the percentage of weeks with positive
+return within a year?
+```{r}
+ggplot(Weekly.summary, aes(x = Year, y = Direction)) +
+  geom_line()
+```
+Most years have a majority of weeks with overal market increases.
+
+Lastly, let's check if any of the variables are normally distributed:
+```{r}
+Weekly %>%
+  select(Lag1, Lag2, Lag3, Volume) %>%
+  mvn(mvnTest = "royston", univariatePlot = "histogram", multivariatePlot = "qq")
+```
+It looks like none of `Lag1`, `Lag2`, `Lag3`, nor `Volume` are normally distributed,
+much less matching a multivariate normal distribution.  Recall that this is an 
+assumption made for LDA and QDA.
+
+**b)** Use the full data set to perform a logistic regression with `Direction`
+as the response and the five lag variables plus `Volume` as predictors.  Use
+the summary function to print the results. Do any of the predictors appear to be
+statistically significant? If so, which ones?
+
+```{r}
+logistic.fit <- glm(
+  Direction ~ Lag1 + Lag2 + Lag3 + Lag4 + Lag5 + Volume, 
+  family = "binomial", 
+  data = Weekly
+)
+summary(logistic.fit)
+```
+`Lag2` is the only statistically significant predictor.  It passes a p-test with
+a significane level of 0.05. Let's see if it is statistically significant on its
+own:
+```{r}
+logistic.fit.2 <- glm(
+  Direction ~ Lag2,
+  family = "binomial",
+  data = Weekly
+)
+summary(logistic.fit.2)
+```
+It is still statistically significant at a higher level.
+
+**c)** Compute the confusion matrix and overall fraction of correct predictions.
+Explain what the confusion matrix is telling you about the types of mistakes made 
+by logistic regression.
+
+Check which variable is coded as `1`:
+```{r}
+contrasts(Weekly$Direction)
+```
+So we can create a vector of predicted responses, remembering to specify `type = response`
+so that `predict` returns the predicted probabilities:
+```{r}
+logistic.probs <- predict(logistic.fit, type = "response")
+logistic.prediction <- rep("Down", length(logistic.probs))
+logistic.prediction[logistic.probs > 0.5] <- "Up"
+
+table(logistic.prediction, Weekly$Direction)
+mean(logistic.prediction == Weekly$Direction)
+```
+The confusion matrix shows us that while the logistic regression model did not
+predict many false negatives, it produced many false positives.  The overall fraction
+of correct predictions was 0.56, which seems good for something as hard to predict
+as the stock market.  However, let's look at the fraction of weeks in which the market
+increased:
+```{r}
+mean(Weekly$Direction == "Up")
+```
+55.5% of weeks saw an overall increase in the market, so a naive guess of "Up" for
+every day would have performed nearly as well as the logistic model.
+
+Let's look at the ROC curve:
+```{r}
+data.frame(
+  true.direction = Weekly$Direction,
+  logistic.probs = logistic.probs
+) %>%
+  roc(true.direction ~ logistic.probs, data = .) %>%
+  plot()
+```
+
+**d)** Now fit the logistic regression model using a trianing data period from
+1990 to 2008, with `Lag2` as the only predictor.  Compute the confusion matrix
+and the overall fraction of correct probabilities for the held out data.
+
+Split into test and train:
+```{r}
+train <- filter(Weekly, Year <= 2008)
+test <- filter(Weekly, Year > 2008)
+```
+
+Train the model:
+```{r}
+logistic.fit.d <- glm(
+  Direction ~ Lag2,
+  data = train,
+  family = "binomial"
+)
+summary(logistic.fit.d)
+```
+`Lag2` is statistically significant at the $p = 0.05$ level.
+
+Predict using the test data:
+```{r}
+logistic.probs.d <- predict(logistic.fit.d, test, type = "response")
+
+logistic.pred.d <- rep("Down", length(logistic.probs.d))
+logistic.pred.d[logistic.probs.d > 0.5] <- "Up"
+
+table(logistic.pred.d, test$Direction)
+mean(logistic.pred.d != test$Direction)
+```
+We have a 37.5% error rate with false postivies appearing much more often than
+false negatives.  How much better is this than just guessing "Up" every time?
+```{r}
+1 - mean("Up" == test$Direction)
+```
+The logistic model beats the accuracy of the naive model by 4%.
+
+**e)** Repeat (d) using LDA.
+
+The data has already been split into train and test sets, so we are ready to 
+fit the model.
+```{r}
+lda.fit <- lda(Direction ~ Lag2, data = train)
+lda.fit
+```
+The group means indicate that, for the training data, the average percentage
+return for 2 weeks previous is positive for a market increase and slightly negative
+for a market increase.
+
+Let's see how it does on the test data:
+```{r}
+lda.prediction <- predict(lda.fit, test)$class
+
+table(lda.prediction, test$Direction)
+mean(lda.prediction != test$Direction)
+```
+The result is identical (in counts) to that obtained using logistic regression.
+Let's see if the individual predictions are also the same:
+```{r}
+mean(lda.prediction == logistic.pred.d)
+```
+Indeed they are.
+
+**f)** Repeat (d) using QDA.
+
+```{r}
+qda.fit <- qda(Direction ~ Lag2, data = Weekly)
+
+qda.prediction <- predict(qda.fit, test)$class
+table(qda.prediction, test$Direction)
+mean(qda.prediction != test$Direction)
+```
+QDA actually selects the most often seen group, "Up", as the response for every
+predictor.  This is still accurate 58.7% of the time, but does not perform better
+than logistic regression or LDA.  Recall that QDA is meant to improve over
+LDA in the case that the covariance matrix of the predictors are different
+for the different response classes.  Let's check that assumption:
+```{r}
+train %>%
+  filter(Direction == "Up") %>%
+  select(Lag2) %>%
+  cov()
+
+train %>%
+  filter(Direction == "Down") %>%
+  select(Lag2) %>%
+  cov()
+```
+The variance does not change much between the value of the response variable indicating
+that the only improvement QDA offers over LDA is lower bias.  
+
+**g)** Repeat (d) using KNN with $K = 1$.
+
+Create the matrix inputs for KNN:
+```{r}
+knn.train <- as.matrix(train$Lag2)
+train.true <- as.matrix(train$Direction)
+knn.test <- as.matrix(test$Lag2)
+test.true <- as.matrix(test$Direction)
+```
+Fit the model
+```{r}
+knn.fit <- knn(
+  train = knn.train, 
+  test = knn.test, 
+  cl = train.true, 
+  k = 1
+)
+
+table(knn.fit, test.true)
+mean(knn.fit != test.true)
+```
+The confusion matrix for KNN with $K = 1$ is quite different from the other 
+models we've fit.  For Logistic Regression, LDA, and QDA, a significant majority
+of the predicted classes were "Up"; for KNN, the predicted classes are nearly 
+evenly split between "Up" and "Down".  The error rate is nearly 50%, though, which
+is worse than a guess of "Up" for every value of `Lag1`.
+
+**h)** Which of these methods appears to provide the best results on the data?
+
+LDA and Logistic Regression appears to provide the best results with an error rate of 37.5%.
+QDA follows with an error rate of 41% and KNN is last with an error rate of 49%.
+
+**i)** Experiment with different combinations of predictors, including possible
+transformations and interactions, for each of the methods.  Report the variables,
+method, and associated confusion matrix that appears to provide the best results on
+the held out data. Note that you should also experiment with values for $K$ in the
+KNN classifier.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
