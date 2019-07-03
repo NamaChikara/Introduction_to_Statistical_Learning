@@ -2,7 +2,11 @@
 title: "Chapter 4 - Applied Exercises"
 author: "ZackBarry"
 date: "7/2/2019"
-output: html_document
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
 ---
 
 ```{r setup, include=FALSE}
@@ -10,7 +14,8 @@ knitr::opts_chunk$set(echo = TRUE)
 library(ISLR)
 library(dplyr)
 library(ggplot2)
-library(MASS) # for lda()
+library(car)   # for vif()
+library(MASS)  # for lda()
 library(class) # for knn()
 library(pROC) # for roc()
 library(MVN)  # for checking for multivariate normal distributions
@@ -300,17 +305,661 @@ method, and associated confusion matrix that appears to provide the best results
 the held out data. Note that you should also experiment with values for $K$ in the
 KNN classifier.
 
+We have already seen that `Lag2` was the only predictor with a significance level
+greater than $p = 0.1$ when fitting a Logistic Regression model with all the `Lag`
+variables and `Volume`. 
+
+Let's try fitting Logistic Regression with a quadratic term:
+```{r}
+logistic.fit.i <- glm(
+  Direction ~ Lag2 + I(Lag2 ^ 2), 
+  family = "binomial",
+  data = Weekly
+)
+summary(logistic.fit.i)
+```
+The quadratic term is not statistically significant. 
+Let's try a square root term:
+```{r}
+logistic.fit.i.2 <- glm(
+  Direction ~ Lag2 + sqrt(abs(Lag2)),
+  family = "binomial",
+  data = Weekly
+)
+summary(logistic.fit.i.2)
+```
+The square root term was also not statistically significant.
+
+Let's try some different $K$ values for the KNN model:
+```{r}
+knn.fit.2 <- knn(
+  train = knn.train,
+  test = knn.test,
+  cl = train.true,
+  k = 2,
+  use.all = TRUE
+)
+table(knn.fit.2, test.true)
+mean(knn.fit.2 != test.true)
+```
+The model decreased in test accuracy.
+
+## 11) Predict mileage based on car data using ISLR::Auto.
+
+**a)** Create a binary variable `mpg01` that contains a 1 if `mpg` contains a 
+value above its median, and a 0 if `mpg` contains a value below its median.
+
+First, let's look at the format of the data set:
+```{r}
+glimpse(Auto)
+```
+
+Use `dplyr` to add the binary variable:
+```{r}
+mpg.median <- median(Auto$mpg)
+print(mpg.median)
+Auto <- Auto %>%
+  mutate(mpg01 = ifelse(mpg > mpg.median, 1, 0))
+glimpse(Auto)
+```
+
+**b)** Explore the data graphically in order to investigate the association between 
+`mpg01` and the other features.  Which of the other features seem most likely to be 
+useful in predicting `mpg01`? Scatterplots and boxplots may be useful tool to answer 
+this question.  Describe your findings.
+
+Since we are trying to predict a binary response variable, predictors will be helpful
+if their class-specific distributions have a small amount of overlapping values.
+Boxplots will allow us to see how their quartiles compare and scatterplots
+will allow to see how their individual points compare.  
+
+#### Boxplots
+Let's start with some boxplots.
+```{r}
+ggplot(Auto, aes(x = factor(mpg01), y = weight)) +
+  geom_boxplot()
+```
+The class-specific distributions for `weight` appear to overlap very little with
+one another.  Next, acceleration:
+```{r}
+ggplot(Auto, aes(x = factor(mpg01), y = acceleration)) +
+  geom_boxplot()
+```
+The `acceleration` variable overlaps much more. Finally, `horsepower` and
+`displacement`:
+```{r}
+ggplot(Auto, aes(x = factor(mpg01), y = horsepower)) +
+  geom_boxplot()
+ggplot(Auto, aes(x = factor(mpg01), y = displacement)) +
+  geom_boxplot()
+```
+Both of these predictors are quite separated for the class-specific distributions
+with `displacement` being more dramatically seperated than `horsepower`.
+
+#### Line graph.
+Let's look at the number of `mpg01` by `year` to see if `year` could be a good predictor:
+```{r}
+Auto %>%
+  group_by(year) %>%
+  summarise(num.0 = sum(mpg01 == 0),
+            num.1 = sum(mpg01 == 1)) %>%
+  ggplot() +
+  geom_line(aes(x = year, y = num.0, color = "num.0")) +
+  geom_line(aes(x = year, y = num.1, color = "num.1")) +
+  scale_color_manual(values = c("num.0" = "red", "num.1" = "blue"))
+```
+We notice a trend of the number of cars beneath the median decreasing over time,
+and the number of cars above the median increasing.  This makes sense because
+it is likely the general trend of `mpg` is upwards. If true, that would imply
+that earlier years have a majority of cars beneath the median and later years a 
+majority over the median. Let's confirm that:
+```{r}
+ggplot(Auto, aes(x = year, y = mpg)) +
+  geom_point()
+```
+
+#### Bar charts.
+Let's look at some bar charts for the categorical variables `cylinders` and `origin`:
+```{r}
+ggplot(Auto, aes(cylinders)) +
+  geom_bar(aes(fill = factor(mpg01)), position = "dodge")
+
+ggplot(Auto, aes(origin)) +
+  geom_bar(aes(fill = factor(mpg01)), position = "dodge")
+```
+4 cylinder cars dominate the observations for cars which have `mpg` values
+above the median while 6 and 8 cylinder cars dominate where `mpg` is below the median.
+Looking at the bar chart where origin is the grouping variable we see a similar, 
+but less stark, grouping for `origin`.
+
+#### Conclusions
+We found above that `cylinders`, `weight`, `displacement`, and `horesepower` were 
+very promising predictors; `origin` could be useful if it is not correlated with 
+either of them. We also found that `acceleration` and `year` are not likely to be 
+good predictors.
+
+Let's check a correlation matrix for the promising variables:
+```{r}
+cor(select(Auto, cylinders, weight, displacement, horsepower, origin, mpg))
+```
+All of these values are at least moderately correlated with one another. Let's
+check the VIF values for a logistic regression model. Recall that 1 is the lowest 
+VIF value, corresponding to no correlation.  VIF values greater than 5 or 10 indicate 
+strong multicollinearity.
+```{r}
+glm(
+  mpg01 ~ cylinders + weight + displacement + horsepower + origin, 
+  data = Auto, 
+  family = "binomial"
+) %>%
+  vif()
+```
+Displacement is clearly the most correlated. Let's check the values with `displacement`
+dropped:
+```{r}
+glm(
+  mpg01 ~ cylinders + weight + horsepower + origin, 
+  data = Auto, 
+  family = "binomial"
+) %>%
+  vif()
+```
+These values are all very close to 1, indicating very little concern for 
+multicollinearity.
+
+**c)** Split the data into a training set and a test set.
+
+Following standard convention, we keep 80% for train and 20% for test:
+```{r}
+set.seed(1)
+set <- sample(
+  c("train", "test"), 
+  size = length(Auto$mpg),
+  replace = TRUE,
+  prob = c(0.8, 0.2)
+)
+Auto <- mutate(Auto, set = set)
+train <- filter(Auto, set == "train")
+test <- filter(Auto, set == "test")
+dim(train)
+dim(test)
+```
+
+**d)** Perform LDA on the training data in order to predict `mpg01` using
+the variables that seemed the most associated with `mpg01` in (b). What is
+the test error of the model obtained?
+
+Recall that `cylinders`, `horsepower`, `weight`, `origin`, and `displacement`
+seemed the most associated with `mpg01`, but were also moderately correlated
+with one another.  We calculated the Variance Inflation Factor (VIF) values
+assuming a logistic regression setting since `vif()` does not accept outputs 
+from `lda()`.  We found that removing `displacement` removed any concern for
+multicollinearity, so we will start by fitting the model with the remaining four
+variables:
+```{r}
+lda.fit.11d <- lda(mpg01 ~ cylinders + horsepower + weight + origin, test)
+lda.fit.11d
+lda.pred.11d <- predict(lda.fit.11d, test)$class
+table(lda.pred.11d, test$mpg01)
+mean(lda.pred.11d != test$mpg01)
+```
+We have a 10% error weight for this model. However, we forgot that origin is a 
+categorical variable with no default ordering. Let's encode a dummy variable and
+retry the fit:
+```{r}
+Auto <- Auto %>%
+  mutate(origin1 = ifelse(origin == 1, 1, 0),
+         origin2 = ifelse(origin == 2, 1, 0))
+
+train <- filter(Auto, set == "train")
+test <- filter(Auto, set == "test")
+
+lda.fit.11d.2 <- lda(mpg01 ~ cylinders + horsepower + weight + origin1 + origin2, data = train)
+lda.fit.11d.2
+lda.pred.11d.2 <- predict(lda.fit.11d.2, test)$class
+table(lda.pred.11d.2, test$mpg01)
+mean(lda.pred.11d.2 != test$mpg01)
+```
+The error rate increased when adding dummy variables for the different `origin`
+categories, but the results are more interpretable.  We can now see that if a car
+is from origin `1` (America), it is more likely to have and `mpg` value beneath the
+median than if the car is origin `2` (European) or `3` (Japan).
 
 
+**e)** Perform QDA on the training set in order to predict `mpg01` using the
+variables that seemed most associated with `mpg01` in (b). What is the test
+error rate of the model?
+
+The data has already been split into train and test, so we are ready to train
+the model and determine the test accuracy:
+```{r}
+qda.fit.11 <- qda(mpg01 ~ cylinders + horsepower + weight + origin, train)
+qda.fit.11
+
+qda.pred.11 <- predict(qda.fit.11, test)$class
+table(qda.pred.11, test$mpg01)
+mean(qda.pred.11 != test$mpg01)
+```
+Model error increased slightly from the LDA result.
+
+**f)** Perform logistic regression on the training data in order to predict
+`mpg01` using the variables that seemed most associated with `mpg01` in (b).
+What is the test error of the model obtained?
+
+```{r}
+logistic.fit.11 <- glm(
+  mpg01 ~ cylinders + horsepower + weight + origin, 
+  data = train,
+  family = "binomial"
+)
+summary(logistic.fit.11)
+
+logistic.prob.11 <- predict(logistic.fit.11, test, predict = "response")
+logistic.pred.11 <- rep(0, length(logistic.prob.11))
+logistic.pred.11[logistic.prob.11 > 0.5] <- 1
+
+table(logistic.pred.11, test$mpg01)
+mean(logistic.pred.11 != test$mpg01)
+```
+The logistic model had two variables which were not statistically significant
+for the model fit, `cylinders` and `origin`.  Despite that, the error rate was
+the same as for LDA.
 
 
+**g)** Perform KNN on the training data, with several values of $K$, in order
+to predict `mpg01`.  Use only the variables that seemed most associated with
+`mpg01` in (b). What test errors do you obtain? Which value of $K$ seems to perform
+best on this data set?
+
+First, get the train and test data into the correct form for `knn()`:
+```{r}
+knn.train <- as.matrix(select(train, cylinders, horsepower, weight, origin))
+train.true <- as.matrix(train$mpg01)
+knn.test <- as.matrix(select(test, cylinders, horsepower, weight, origin))
+test.true <- as.matrix(test$mpg01)
+```
+
+Now let's fit KNN for increasing values for $K$:
+```{r}
+knn.fit.11.1 <- knn(
+  train = knn.train,
+  cl = train.true,
+  test = knn.test,
+  k = 1
+)
+mean(knn.fit.11.1 != test.true)
+```
+16.1% error rate for $K=1$; this is worse than the previous 3 models.
+```{r}
+knn.fit.11.2 <- knn(
+  train = knn.train,
+  cl = train.true,
+  test = knn.test,
+  k = 2
+)
+mean(knn.fit.11.2 != test.true)
+```
+11.5% error rate for $K=2$; this is better than QDA but worse than LDA or logistic
+regression.
+```{r}
+knn.fit.11.3 <- knn(
+  train = knn.train,
+  cl = train.true,
+  test = knn.test,
+  k = 3
+)
+mean(knn.fit.11.3 != test.true)
+```
+14.9% error rate for $K=3$, not an improvement over $K=2$.
+```{r}
+knn.fit.11.4 <- knn(
+  train = knn.train,
+  cl = train.true,
+  test = knn.test,
+  k = 4
+)
+mean(knn.fit.11.4 != test.true)
+```
+```{r}
+knn.fit.11.5 <- knn(
+  train = knn.train,
+  cl = train.true,
+  test = knn.test,
+  k = 5
+)
+mean(knn.fit.11.5 != test.true)
+```
+
+KNN seems to have the best result with $K=2$.
 
 
+## 13) Predict crime rate for MASS::Boston.
+Using the `Boston` data set, fit classification models in order to predict whether
+a given suburb has a crime rate above or below the median.   Explore logistic
+regression, LDA, and KNN models using various subsets of the predictors.
+Describe your findings.
+
+### Explore the data.
+
+```{r}
+glimpse(Boston)
+```
+Let's rename the variables to something more readable:
+```{r}
+Boston <- Boston %>%
+  rename(
+     crime_rate = "crim",
+     prop_large_house = "zn",
+     prop_industry = "indus",
+     river = "chas",
+     nitrogen_conc = "nox",
+     rooms_per_house = "rm",
+     prop_old_house = "age",
+     work_dist = "dis",
+     hgwy_dist = "rad",
+     tax_rate = "tax",
+     prop_stud_teach = "ptratio",
+     black_measure = "black",
+     lower_status = "lstat",
+     med_value = "medv"
+  )
+glimpse(Boston)
+```
+No we can get a better sense of the data at a glance.
+
+Next, let's code a variable `high_crime` to be 1 if the `crime_rate` is larger
+than the median and 0 otherwise:
+```{r}
+Boston <- Boston %>%
+  mutate(high_crime = ifelse(crime_rate > median(crime_rate), 1, 0))
+```
+
+Now we can see which variables might serve as the best predictors. First, we'll
+look at boxplots to see if any variables have minimally overlapping distributions
+for the different classes of `high_crime`.
+```{r}
+p <- ggplot(Boston, aes(x = factor(high_crime)))
+
+p + 
+  geom_boxplot(aes(y = prop_stud_teach)) +
+  labs(title = "Proportion of Students to Teachers")
+  
+ggplot(Boston, aes(x = prop_stud_teach)) +
+  geom_bar(aes(fill = factor(high_crime)), position = "dodge") +
+  labs(title = "Proportion of Students to Teachers")
+
+p +
+  geom_boxplot(aes(y = tax_rate)) +
+  labs(title = "Tax Rate")
+
+p + 
+  geom_boxplot(aes(y = med_value)) +
+  labs(title = "Median Value")
+```
+In both cases of `prop_stud_teach` and `tax_rate`, we have right skewed distributions
+for `high_crime = 1`.  The class-specific distributions for `tax_rate` overlap less
+than `prop_stud_teach`, indicating it may be useful for predicting `high_crime`.
+
+We'll use a confusion matrix to evaluate the correlation of `river` and `high_crime`:
+```{r}
+table(Boston$river, Boston$high_crime)
+```
+There is at best a weak relationship between `river` and `high_crime`.
+
+```{r}
+ggplot(Boston, aes(x = nitrogen_conc, y = prop_large_house, color = factor(high_crime))) +
+  geom_point()
+
+p +
+  geom_boxplot(aes(y = prop_large_house)) +
+  labs(title = "Proportion of Large Houses")
+
+p + 
+  geom_boxplot(aes(y = nitrogen_conc)) +
+  labs(title = "Nitrogen Concentration")
+```
+Both `nitrogen_conc` and `prop_large_house` have relatively disjoint distributions depending
+on the class of `high_crime`, but they appear to be correlated.
+```{r}
+cor(Boston$nitrogen_conc, Boston$prop_large_house)
+```
+They share a moderate correlation with one another.
+
+Lastly, let's look at `black_measure` and `lower_status`:
+```{r}
+ggplot(Boston, aes(x = black_measure, y = lower_status, color = factor(high_crime))) +
+  geom_point()
+
+p + 
+  geom_boxplot(aes(y = black_measure)) +
+  labs(title = "Measure of Proportion of Black Residents")
+
+p + 
+  geom_boxplot(aes(y = lower_status)) +
+  labs("Percent of Population of Lower Status")
+
+cor(Boston$black_measure, Boston$lower_status)
+```
+Both could be usefull and they are only weakly correlated.
+
+In order of potential usefullness, we identify `tax_rate`, `nitrogen_conc`, 
+`prop_large_house`, `prop_stud_teach`, `lower_status`, `med_value`, `black_measure`.
+Let's check their correlation matrix to avoid problems of multicollinearity:
+```{r}
+Boston %>%
+  select(tax_rate, nitrogen_conc, prop_large_house, prop_stud_teach, 
+         lower_status, med_value, black_measure, high_crime) %>%
+  cor()
+```
+`tax_rate` and `nitrogen_conc` are highly correlated; we will drop `tax_rate` since
+`nitrogen_conc` is more highly correlated with `high_crime`. `lower_status` also
+shows some strong correlations with `nitrogen_conc` and `med_value`; we will drop it as well.
+That leaves us with `nitrogen_conc`, `prop_large_house`, `prop_stud_teach`,
+`med_value`, and `black_measure`.
+
+Let's also check the Variational Inflation Factors of each potential predictor:
+```{r}
+temp.fit <- glm(
+  high_crime ~ tax_rate + nitrogen_conc + prop_large_house + prop_stud_teach +
+    lower_status + med_value + black_measure,
+  data = Boston,
+  family = "binomial"
+)
+vif(temp.fit)
+```
+The VIF for each variable is quite low for a Logistic Regression fit, so there may not
+be any reason to remove `tax_rate` or `lower_status`.
+
+Time to fit some models!
+
+### Split into test and train sets.
+
+```{r}
+set.seed(1)
+set <- sample(
+  c("train", "test"), 
+  size = length(Boston$crime_rate),
+  replace = TRUE,
+  prob = c(0.8, 0.2)
+)
+Boston <- mutate(Boston, set = set)
+train <- filter(Boston, set == "train")
+test <- filter(Boston, set == "test")
+```
 
 
+### Fit logistic regression.
 
+We'll try three sets of predictors: (1) `nitrogen_conc`, `prop_large_house`, and `prop_stud_teach`.
+(2) `nitrogen_conc`, `tax_rate`, `prop_large_house`, `prop_stud_teach`, and `lower_status`,
+(3) `nitrogen_conc`, `tax_rate`, `prop_large_house`, `prop_stud_teach`, `med_value`, `black_measure`, and `lower_status`,
+```{r}
+logistic.fit.1 <- glm(
+  high_crime ~ nitrogen_conc + prop_large_house + prop_stud_teach,
+  data = train,
+  family = "binomial"
+)
+summary(logistic.fit.1)
 
+logistic.fit.2 <- glm(
+  high_crime ~ nitrogen_conc + tax_rate + prop_large_house + prop_stud_teach + lower_status,
+  data = train,
+  family = "binomial"
+)
+summary(logistic.fit.2)
 
+logistic.fit.3 <- glm(
+  high_crime ~ nitrogen_conc + tax_rate + prop_large_house + prop_stud_teach + 
+    lower_status + med_value + black_measure,
+  data = train,
+  family = "binomial"
+)
+summary(logistic.fit.3)
+```
+We'll try a fourth model using the statistically significant variables from above:
+```{r}
+logistic.fit.4 <- glm(
+  high_crime ~ nitrogen_conc + med_value + black_measure,
+  data = train,
+  family = "binomial"
+)
+summary(logistic.fit.4)
+```
 
+Model 4 is the only one in which each predictor variable is statistically
+significant.  Let's see how each model does on the test set:
+```{r}
+logistic.error <- function(logistic.fit, test, i) {
+  logistic.probs <- predict(logistic.fit, test, type = "response")
+  logistic.pred <- rep(1, length(test$crime_rate))
+  logistic.pred[logistic.probs <= 0.5] <- 0
+  print(paste("The error rate for model", i, "is", mean(logistic.pred != test$high_crime)))
+}
 
+logistic.error(logistic.fit.1, test, 1)
+logistic.error(logistic.fit.2, test, 2)
+logistic.error(logistic.fit.3, test, 3)
+logistic.error(logistic.fit.4, test, 4)
+```
+Model 1 has the lowest error rate at 14.58%.
 
+### Fit LDA.
+ 
+We'll use the same predictors as the best two models from Logistic Regression.
+```{r}
+lda.fit.1 <- lda(
+    high_crime ~ nitrogen_conc + prop_large_house + prop_stud_teach,
+    train
+)
+print(lda.fit.1)
+
+lda.fit.2 <- lda(
+    high_crime ~ nitrogen_conc + prop_large_house + prop_stud_teach + tax_rate + lower_status,
+    train
+)
+print(lda.fit.2)
+```
+When the additional predictors, `tax_rate` and `lower_status`, are added to
+the second LDA model, the coefficients for `nitrogen_conc` and `prop_stud_teach`
+shrink closer to zero.  This indicates that they have less influence for deciding
+the response class in the presence of the other variables.  
+
+Let's see what the training error rates are:
+```{r}
+lda.pred.1 <- predict(lda.fit.1, test)$class
+print(paste("The error rate for LDA 1 is", 100*round(mean(lda.pred.1 != test$high_crime), 4), "percent."))
+
+lda.pred.2 <- predict(lda.fit.2, test)$class
+print(paste("The error rate for LDA 2 is", 100*round(mean(lda.pred.2 != test$high_crime), 4), "percent."))
+```
+Both models have an error rate of 17.71%, they do not outperform the Logistic 
+Regression model.
+
+### Fit QDA.
+
+```{r}
+qda.fit.1 <- qda(
+    high_crime ~ nitrogen_conc + prop_large_house + prop_stud_teach,
+    train
+)
+qda.pred.1 <- predict(qda.fit.1, test)$class
+print(paste("The error rate for QDA 1 is", 100*round(mean(qda.pred.1 != test$high_crime), 4), "percent."))
+
+qda.fit.2 <- qda(
+    high_crime ~ nitrogen_conc + prop_large_house + prop_stud_teach + tax_rate + lower_status,
+    train
+)
+qda.pred.2 <- predict(qda.fit.2, test)$class
+print(paste("The error rate for QDA 2 is", 100*round(mean(qda.pred.2 != test$high_crime), 4), "percent."))
+```
+Quadratic Discriminant Analysis performs worse than both LDA and Logistic Regression.
+
+### Fit KNN.
+
+For KNN we will fit a 3rd model, using all variables.
+
+First we need to create subset of the test and train data frames to provide
+valid input to `knn()`.
+```{r}
+train.1 <- train %>%
+  select(nitrogen_conc, prop_large_house, prop_stud_teach) %>%
+  as.matrix()
+train.2 <- train %>%
+  select(nitrogen_conc, prop_large_house, prop_stud_teach, tax_rate, lower_status) %>%
+  as.matrix()
+train.3 <- train %>%
+  select(-crime_rate, -high_crime, -set) %>%
+  as.matrix()
+train.true <- train %>%
+  select(high_crime) %>%
+  as.matrix()
+
+test.1 <- test %>%
+  select(nitrogen_conc, prop_large_house, prop_stud_teach) %>%
+  as.matrix()
+test.2 <- test %>%
+  select(nitrogen_conc, prop_large_house, prop_stud_teach, tax_rate, lower_status) %>%
+  as.matrix()
+test.3 <- test %>%
+  select(-crime_rate, -high_crime, -set) %>%
+  as.matrix()
+test.true <- test %>%
+  select(high_crime) %>%
+  as.matrix()
+```
+
+Now we can fit our three models for a range of $K$ values.
+
+```{r}
+set.seed(1)  # so ties are handled reproducibly for KNN
+
+knn.err <- function(train, train.true, test, test.true, k, model.num) {
+  knn.fit <- knn(
+    train = train,
+    test = test,
+    cl = train.true,
+    k = k
+  )
+  100*round(mean(knn.fit != test.true), 4)
+}
+
+err.frame <- data.frame(k = c(), model.1 = c(), model.2 = c(), model.3 = c())
+for (k in seq(1, 10)) {
+  err.1 <- knn.err(train.1, train.true, test.1, test.true, k, 1)
+  err.2 <- knn.err(train.2, train.true, test.2, test.true, k, 2)
+  err.3 <- knn.err(train.3, train.true, test.3, test.true, k, 3)
+  err.frame <- rbind(err.frame, data.frame(k = k, model.1 = err.1, model.2 = err.2, model.3 = err.3))
+}
+print(err.frame)
+```
+The best model fit is KNN with $K = 1$ or $K = 2$ and predictors 
+`nitrogen_conc`, `prop_large_house`, `prop_stud_teach`. These two models
+outperform all others.
+
+### Conclusions.
+
+The best set of predictor variables across the 4 model types was the combination
+of `nitrogen_conc`, `prop_large_house`, and `prop_stud_teach`.  On this set of 
+predictors, the models performed as follows: KNN did the best with a 5.21% test 
+error rate fo $K=1$ and $K=2$; Logistic Regression had a 14.6% test error rate;
+LDA a 17.7% error rate; QDA a 20.8% error rate.
