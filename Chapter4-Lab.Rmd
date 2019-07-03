@@ -2,7 +2,11 @@
 title: "Chapter 4 - Lab"
 author: "ZackBarry"
 date: "6/27/2019"
-output: html_document
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
 ---
 
 ```{r setup, include=FALSE}
@@ -21,7 +25,7 @@ select <- dplyr::select # avoid namespace collision with MASS
 filter <- dplyr::filter  
 ```
 
-## The data
+# The data
 ```{r}
 names(Smarket)
 ```
@@ -33,7 +37,7 @@ dim(Smarket)
 summary(Smarket)
 ```
 
-### Check for any correlated predictors.
+## Check for any correlated predictors.
 Remember to remove qualitative predictors.
 ```{r}
 cor(select(Smarket, -Direction))
@@ -47,7 +51,7 @@ ggplot(Smarket, aes(x = Year, y = Volume)) +
 ```
 Volume seems to be trending up over the years.
 
-## Logistic regression
+# Logistic regression
 
 Run a logistic regression to predict `Direction` based on `Lag1` through `Lag5`, 
 and `Volume`.  We can do this using `glm()` with the option `family = binomial`.
@@ -83,7 +87,7 @@ So we have a 52.2% success rate, or a 47.8% error rate.  However, these values
 were calculated for the training set. We need to split the data into training
 and test sets in order to get a more realistic error rate.
 
-### Train and test
+## Train and test
 
 Let's get an idea of the distribution of our data:
 ```{r}
@@ -126,7 +130,7 @@ rate on predicted Up days is lower than predicting Down days:
 100 * round(196 / (196 + 258), 2)
 ```
 
-### Repeat with only Lag1 and Lag2 as predictors.
+## Repeat with only Lag1 and Lag2 as predictors.
 
 ```{r}
 logistic.fit_3 <- glm(Direction ~ Lag1 + Lag2, family = "binomial", data = Smarket)
@@ -140,9 +144,9 @@ mean(up_down_test != filter(Smarket, Year >= 2004)$Direction)
 ```
 The model actually improved in fit!
 
-## Linear Discriminant Analysis (LDA)
+# Linear Discriminant Analysis (LDA)
 
-### Check covariance assumption.
+## Check covariance assumption.
 
 Recall that LDA assumes that the covariance matrices of the predictors are
 approximately the same for each of the response values:
@@ -161,7 +165,7 @@ abs(covDown - covUp) / max(covDown, covUp)
 ```
 All values are within 10% of one another -- the assumption is nearly valid.
 
-### Check MVN assumption.
+## Check MVN assumption.
 
 Now check for multivariate normal distribution assumption using the vignette for
 `MVN` as a guide (https://cran.r-project.org/web/packages/MVN/vignettes/MVN.pdf).
@@ -202,7 +206,7 @@ Normal Q-Q plots that fall along a line in the middle of the graph, but curve
 off in the extremeties usually indicate that the data has more extreme values
 than would be expected if it truly came from a normal distribution.
 
-### Train and test.
+## Train and test.
 Data sets `train` and `test` were created during the logistic regression analysis
 by splitting the `Smarket` at `2004`:
 ```{r}
@@ -211,7 +215,7 @@ test <- filter(Smarket, Year >= 2004)
 ```
 
 
-### Create LDA model from training data.
+## Create LDA model from training data.
 
 The syntax for `lda()` is the same as `lm()` and `glm()`:
 ```{r}
@@ -241,7 +245,7 @@ contrasts(Smarket$Direction)
 Since `Up` is coded as 1, a positive value for the LDA combination indicates a 
 prediction of `Up`.  The LDA rule is $LDA(Lag1, Lag2) = -0.592\times Lag1 - 0.448 \times Lag2$.
 
-### Predict response for one new data point.
+## Predict response for one new data point.
 
 Before applying the model to the whole test set, let's understand the output from
 one new data point:
@@ -259,7 +263,7 @@ most likely came from the `Down` class.  Finally, `x` contains the linear discri
 Since it is negative for our data, this indicates the model predicts a response
 of `Down`.
 
-### Predict responses for test data.
+## Predict responses for test data.
 
 First, calculate the predictions:
 ```{r}
@@ -276,7 +280,6 @@ mean(lda.pred$class == test$Direction)
 We have a `r (1 - 0.468) * 100`% testing error rate -- this is worse than if
 we had just guessed `Up` for every set of predictors.  
 
-### Conclusion
 Recall the results obtained via logistic regression on the same train/test sets:
 ```{r}
 table(up_down_test, test$Direction)
@@ -289,9 +292,9 @@ that `Lag1` and `Lag2` were not normally distributed (much less multivariately
 normally distributed), the assumptions of LDA were not met.
 
 
-## Quadratic Discriminant Analysis (QDA)
+# Quadratic Discriminant Analysis (QDA)
 
-### Fit the model.
+## Fit the model.
 QDA is applied in the same way as LDA:
 ```{r}
 qda.fit <- qda(Direction ~ Lag1 + Lag2, data = train)
@@ -302,7 +305,7 @@ is as expected since those values do not depend on the model chosen.  Note that
 the coefficients of the linear discriminants are not printed because the QDA
 classifier involves a quadratic function of the predictors.
 
-### Evaluate performance.
+## Evaluate performance.
 
 ```{r}
 qda.test.result <- predict(qda.fit, test)
@@ -310,7 +313,7 @@ table(qda.test.result$class, test$Direction)
 mean(qda.test.result$class == test$Direction)
 ```
 
-## K Nearest Neighbors (KNN)
+# K Nearest Neighbors (KNN)
 
 We will use the function `class::knn()`.  Arguments required are 
 
@@ -319,7 +322,7 @@ We will use the function `class::knn()`.  Arguments required are
 * cl: a vector containing the true class labels for training observations
 * k: the number of nearest neighbors used
 
-### Create arguments.
+## Create arguments.
 
 Again, we will split train and test along the year 2003:
 ```{r}
@@ -344,7 +347,7 @@ knn.test.cl <- Smarket %>%
   as.matrix()
 ```
 
-### Fit the model and test for different K.
+## Fit the model and test for different K.
 
 Start with $K = 1$:
 ```{r}
@@ -387,7 +390,7 @@ mean(knn.3 != knn.test.cl)
 Decrease in accuracy from the $K=2$ case.
 
 
-## Conclusions.
+# Conclusions.
 
 In order of accuracy on the test set, the models rank in the following order:
 
@@ -406,6 +409,152 @@ ggplot(Smarket, aes(x = Lag1, y = Lag2, color = Direction)) + geom_point()
 Also, (b) does not hold since the training set was large ($ n > 500$) and the
 predictors were not normally distributed.  Thus, we would expect Logistic Regression
 to outperform LDA and QDA.
+
+
+# Application to ISLR::Caravan.
+
+`Caravan` contains 5822 customer records, each consisting of 86 variables. 
+Variables 1-43 are sociodemographic data; the remainder are data on product ownership.
+```{r}
+names(Caravan)
+```
+The names are not descriptive (at least for someone lacking domain knowledge).
+The response variable we are trying to predict is `Purchase`.  It is a binary
+vector with `No` and `Yes` being the possible values:
+```{r}
+summary(Caravan$Purchase)
+```
+A large majority of the customers did not make a purchase.
+
+## Example of importance of centered data for KNN.
+
+Since KNN relies on the distances between observations, the scale of the individual
+variables is very important.  Consider the case if we had a data set with observations
+of the form $X = (\text{Income}, \text{Age}, \text{Satisfaction})$ and two observations
+$X_1 = (1050, 10, 10)$, $X_2 = (1000, 40, 1)$.  We would like to predict
+the satisfaction (1 to 10) of a 40 year old with an income of \$1045.
+For KNN with $K = 1$, the $X_1$ observation would be closest and we would predict
+a satisfaction value of 10.  However, we would expect a 40 year old with an income
+of only \$1045 to have a satisfaction closer to a 40 year old with an income of \$1000
+than a 10 year old with an income of \$1050.
+
+To get around this problem, we should center and scale the predictor variables so
+that variables with an inerently large scale will not matter more than variables with
+an inherently small scale (like income and age).  To center and scale, we 
+subtract the mean and divide by the standard deviation:
+```{r}
+scale(c(1050, 1000))
+scale(c(10, 40))
+```
+For income, the mean is \$1025 and the standard deviation is \$35.35.  For
+age, the mean is 25 and the standard deviation is 21.21.  Let's scale the
+data point we would like to predict satisfaction for given these values:
+```{r}
+income = (1045 - 1025) / 35.35534
+print(income)
+age = (40 - 25) / 21.2132
+print(age)
+```
+Now let's apply KNN with $K=1$ to the scaled data:
+```{r}
+distance_1 = sqrt((0.5656854 - 0.7071068)^2 + (0.7071069 - (-0.7071068))^2)
+print(distance_1)
+distance_2 = sqrt((0.5656854 - (-0.7071068))^2 + (0.7071069 - 0.7071068)^2)
+print(distance_2)
+```
+With the scaled data, the new observation is closest to $X_2$ and so we predict
+a happiness level of 1 for KNN with $K=1$.
+
+Notice that we did not scale the response variable since it is not used to 
+compare the distance between the predictor variables and the training variables.
+
+## Scale Caravan data and split into train and test.
+
+Standardize all the predictors:
+```{r}
+standardized.X <- scale(Caravan[,-86])
+```
+
+Split the standardized data into test and train.
+```{r}
+set <- sample(
+  c("test", "train"), 
+  size = length(standardized.X[,1]),
+  replace = TRUE,
+  prob = c("0.2", "0.8")
+)
+standardized.X <- as.data.frame(standardized.X) %>%
+  mutate(set = set)
+true.Y <- data.frame(Purchase = Caravan$Purchase, set = set)
+
+knn.train <- standardized.X %>%
+  filter(set == "train") %>%
+  select(-set) %>%
+  as.matrix()
+knn.test <- standardized.X %>%
+  filter(set == "test") %>%
+  select(-set) %>%
+  as.matrix()
+train.true <- true.Y %>%
+  filter(set == "train") %>%
+  select(-set) %>%
+  as.matrix()
+test.true <- true.Y %>%
+  filter(set == "test") %>%
+  select(-set) %>%
+  as.matrix()
+```
+
+## Fit the KNN model.
+
+We'll start with $K=1$:
+```{r}
+knn.1 <- knn(
+  train = knn.train,
+  test = knn.test,
+  cl = train.true,
+  k = 1
+)
+table(knn.1, test.true)
+mean(knn.1 != test.true)
+```
+We have a 10% error rate which is worse than if we had just guessed "No" every
+time since only 6% of people made a purchase.  However, if our rate of true
+positives relative to total positive guesses is higher than 6%, then we would have
+segmented the population into a group which a sales person could target more
+effectively than randomly selecting a member of the population at large.
+Indeed, our model with $K=1$ does a better job than randomly guessing for it's
+predicted "Yes" population.  Among the 64 customers which the model predicted 
+a response of "Yes", 10.9% of them actaully made a purchase.
+
+Let's see if the success rate improves as $K$ grows:
+```{r}
+set.seed(1)
+for (i in c(1:10)) {
+  knn.result <- knn(
+    train = knn.train,
+    test = knn.test,
+    cl = train.true,
+    k = i
+  )
+  success.rate <- data.frame(predicted = knn.result, true = as.vector(test.true)) %>%
+    filter(predicted == "Yes") %>%
+    mutate(true = ifelse(true == "Yes", 1, 0)) %>%
+    summarise(rate = sum(true) / n(),
+              count = n())
+  print(paste0("The success rate for K = ", i, " is ", round(100*success.rate$rate, 2), "%"))
+  print(paste0(success.rate$count, " people were identified as people of interest."))
+}
+```
+
+KNN for $K=8$ had the highest success rate for the people it identified as purchasers.
+However, only 7 people were included in this group out of 1119 test observations.
+This is a small pool to target too.  $K=4$ has the second highest success rate at
+18.75% and also includes 16 potential purchasers.  One strategy would be to 
+run the model with $K=8$, contact all the people marked as "Yes", and then
+contact those in the $K=7$ group who were not in the $K=8$ group. Then so on 
+though the $K=1$ group.
+
 
 
 
