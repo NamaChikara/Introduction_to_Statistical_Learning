@@ -1,0 +1,125 @@
+---
+title: "Chapter5-Lab"
+author: "ZackBarry"
+date: "7/6/2019"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ISLR)
+library(dplyr)
+library(ggplot2)
+library(MASS) # for lda()
+library(class) # for knn()
+library(MVN)  # for checking for multivariate normal distributions
+# ^ need to install jags directly from 
+#    https://sourceforge.net/projects/mcmc-jags/files/JAGS/4.x/Mac%20OS%20X/
+#   before installing MVN
+
+select <- dplyr::select # avoid namespace collision with MASS
+filter <- dplyr::filter  
+```
+
+# Cross-Validation and the Bootstrap
+
+The methods within this lab all have the same goal: estimate the test mean squared
+error before applying the model to the test set in order to further optimize the 
+model.  They all involve segmenting the training set into multiple subsets.
+Sometimes these subsets are disjoint; other times they are not. 
+
+For all of the examples in this lab, we will be fitting `mpg` as a function of 
+`horsepower`.
+
+## The Validation Set Approach
+
+The validation set approach divides the data set into a training set, a validation set,
+and a test set.  The training set is used to build the model and the validation set
+is used to estimate the MSE before the model is applied to the test set.  This
+is helpful to the model creator because they can estimate the test errors of several
+different potential models before committing to one for the test set.
+
+We'll be using `ISLR::Auto` for illustrating the validation set approach. 
+First, split the data into training and test sets containing 80% and 20% of the 
+data.
+```{r}
+set.seed(1)
+
+data_size <- dim(Auto)[1]
+
+train_size <- ceiling(0.8 * data_size)
+
+train_index = sample(data_size, train_size)
+test_index = setdiff(seq(1, data_size), train_index)
+
+train <- Auto[train_index, ]
+test <- Auto[test_index, ]
+
+paste("dim train:", dim(train)[1], "| dim test:", dim(test)[1],  
+      "| train ratio:", dim(train)[1] / data_size)
+```
+
+We repeat the process to split the training set into smaller training set and a 
+new validation set, containing 80% and 20% of the training set, respectively.
+```{r}
+new_train_size <- ceiling(0.8 * train_size)
+
+new_train_index <- sample(train_size, new_train_size)
+validation_index <- setdiff(seq(1, train_size), new_train_index)
+
+new_train <- train[new_train_index, ]
+validation <- train[validation_index, ]
+train <- new_train
+
+paste("dim train:", dim(train)[1], "| dim validation:", dim(validation)[1],
+      "| train ratio:", dim(train)[1] / (dim(train)[1] + dim(validation)[1]))
+```
+
+Now we can estimate the test MSE for several models by fitting the model to the 
+training data set and then calculating the validation set error.  We will select the
+model with the lowest validation set MSE to calculate the test MSE for.
+```{r}
+lm.fit <- lm(mpg ~ horsepower, data = train)
+lm.val.error <- mean((predict(lm.fit, validation) - validation$mpg) ^ 2)
+print(paste("linear validation MSE:", lm.val.error))
+
+quad.fit <- lm(mpg ~ poly(horsepower, 2), data = train)
+quad.val.error <- mean((predict(quad.fit, validation) - validation$mpg) ^ 2)
+print(paste("quadratic validation MSE:", quad.val.error))
+
+cube.fit <- lm(mpg ~ poly(horsepower, 3), data = train)
+cube.val.error <- mean((predict(cube.fit, validation) - validation$mpg) ^ 2)
+print(paste("cubic validation MSE:", cube.val.error))
+```
+
+The results indicate to use that the linear regression models with a quadratic
+and cubic `horsepower` terms are a better fit than the simple linear model.
+However, the validation set MSE is very close between the quadratic and cubic models.
+Since these values are likely to change slightly depending on which random subsets
+was selected for the training and validation sets, we can not make a definitive decision
+between the two models. 
+For the sake of choosing a model, though, we will select the 
+cubic model as having the potential to perform best on the test set.
+Let's see how that selection works out:
+```{r}
+lm.test.error <- mean((predict(lm.fit, test) - test$mpg) ^ 2)
+print(paste("linear test MSE:", lm.test.error))
+
+quad.test.error <- mean((predict(quad.fit, test) - test$mpg) ^ 2)
+print(paste("quadratic test MSE:", quad.test.error))
+
+cube.test.error <- mean((predict(cube.fit, test) - test$mpg) ^ 2)
+print(paste("cubic test MSE:", cube.test.error))
+```
+
+Although the test MSE values are all higher than the validation MSE values,
+the models have the same ranked performance -- the linear model performs significantly
+worse than the models with a quadratic and cubic term but there is little evidence
+that the cubic model is an improvement over the quadratic model.
+
+
+
