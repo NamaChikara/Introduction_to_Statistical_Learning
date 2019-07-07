@@ -16,6 +16,7 @@ library(dplyr)
 library(ggplot2)
 library(MASS) # for lda()
 library(class) # for knn()
+library(boot) # for cv.glm() and boot()
 library(MVN)  # for checking for multivariate normal distributions
 # ^ need to install jags directly from 
 #    https://sourceforge.net/projects/mcmc-jags/files/JAGS/4.x/Mac%20OS%20X/
@@ -120,6 +121,91 @@ Although the test MSE values are all higher than the validation MSE values,
 the models have the same ranked performance -- the linear model performs significantly
 worse than the models with a quadratic and cubic term but there is little evidence
 that the cubic model is an improvement over the quadratic model.
+
+## Leave-One-Out Cross-Validation
+
+LOOCV estimates the test MSE by fitting the model to each of the $N$
+subsets that can be made from the training set by removing one of the $N$ values.
+The MSE for each of these $N$ models is $\text{MSE}_i = (\hat{y}_i - y_i)^2$ where
+$x_i$ is the point that was removed for the model fit and $\hat{y}_i$ is the 
+resulting estimate for the $i$th response variable 
+The cross-valiation value is then $\text{CV}_{(N)}=\frac{1}{N}\sum_{i=1}^N \text{MSE}_i$.
+This value is expensive to calculate for models which are not solved via 
+least squares linear or polynomial regression, but it is much lest biased than
+the validation approach since each $\text{MSE}_i$ is calculated using a subset
+that is nearly as large as the actual training set.
+
+The LOOCV MSE estimate can be calculated for any generalized linear model
+by using `glm()` and `cv.glm()`.  Note that `lm()` and `glm()` return the same results
+if the default `family = gaussian` argument is used for `glm()`.
+
+```{r}
+train_index <- sample(dim(Auto)[1], ceiling(dim(Auto)[1] * 0.8))
+
+train <- Auto[train_index, ]
+test <- Auto[-train_index, ]
+
+for (i in 1:5) {
+  loocv.model <- glm(mpg ~ poly(horsepower, degree = i), data = train)
+  loocv.error <- cv.glm(data = train, glmfit = loocv.model)$delta[1]
+  test.error <- mean((predict(loocv.model, test) - test$mpg) ^ 2)
+  print(paste("Poly degree:", i, "| LOOCV est.:", round(loocv.error, 2), "| Test MSE:", round(test.error, 2)))
+}
+```
+
+As with the validation set approach, we see that the LOOCV estimate does not
+match the Test MSE in magnitude, but does a good job matching the Test MSE
+in terms of the relative performance of the models.
+
+## k-Fold Cross-Validation
+
+k-fold Cross Validation works similarly to LOOCV.  The data set is divided into
+$k$ groups of equal size.  Each of the groups is in turn treated as a validation
+set for the model fit to the other $k-1$ groups.  This results in $k$ estimates
+of the test MSE so that the cross validation estimate is $\text{CV}_{(k)}=\frac{1}{k}\sum_{i=1}^k\text{MSE}_i$.
+
+This value can also be calculated using `cv.glm()` by setting the `k` argument.
+The default `k` value is the 1 so that `cv.glm()` defaults to LOOCV in the 
+section above.  A common choice of $k$ is $k=10$.
+```{r}
+for (i in 1:5) {
+  kfold.fit <- glm(mpg ~ poly(horsepower, degree = i), data = train)
+  kfold.cv <- cv.glm(train, kfold.fit, K = 10)$delta[1]
+  test.error <- mean((predict(kfold.fit, test) - test$mpg) ^ 2)
+  print(paste("Poly degree:", i, "| k-Fold est.:", round(kfold.cv, 2), "| Test MSE:", round(test.error, 2)))
+}
+```
+
+## The Bootstrap
+
+The bootstrap method seeks to estimate the Standard Error of the parameters of
+a given model $\{\alpha_i\}_{i\in\mathcal{I}}$.  It does this by sampling $B$ 
+different "bootstrap data sets" which are the same size as the training set and are created by sampling the training set with replacement.  The model is then fit
+to each of these sets to obtain $B$ estimates of each parameter. Finally the 
+standard errors of the bootstrap estimates are calculated by
+$$ \text{SE}_B(\hat{\alpha}_i) = \sqrt{\frac{1}{B-1}\sum_{r=1}^B
+\left(\hat{\alpha_i}^r - \frac{1}{B}\sum_{r'=1}^B \hat{\alpha_i}^{r'}\right)^2}.$$
+
+We will apply the bootstrap method using the function `boot()` from the `boot`
+package.  This function requires 3 arguments - `data`, `statistic`, `R`.
+For our purposes, `data` is the training data set and `R` is the number of 
+bootstrap data sets to calculate. `statistic` is a "function which when applied
+to data returns a vector containing the statistic(s) of interest".  It must take
+2 parameters, the first of which accepts the original data and the second of which
+accepts a vector of indicies that define the bootstrap data set.
+
+```{r}
+boot.statistic <- function(data, subset.indicies) {
+  model <- glm(mpg ~ horsepower, data = data, subset = subset.indicies)
+  return(coef(model))
+}
+
+boot(
+  data = train, 
+  statistic = boot.statistic, 
+  R = 1000
+)
+```
 
 
 
