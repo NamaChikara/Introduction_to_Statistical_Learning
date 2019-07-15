@@ -1,0 +1,158 @@
+---
+title: "Chapter 5 Exercises"
+author: "ZackBarry"
+date: "7/6/2019"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ISLR)
+library(dplyr)
+library(ggplot2)
+library(MASS) # for lda()
+library(class) # for knn()
+library(boot) # for cv.glm() and boot()
+library(MVN)  # for checking for multivariate normal distributions
+# ^ need to install jags directly from 
+#    https://sourceforge.net/projects/mcmc-jags/files/JAGS/4.x/Mac%20OS%20X/
+#   before installing MVN
+
+select <- dplyr::select # avoid namespace collision with MASS
+filter <- dplyr::filter  
+```
+
+### 5) Estimate test error using the validation set approach.
+
+In Chapter 4, we used logistic regression to predict the probability of `default`
+using `income` and `balance` on the `Default` data set. We will now estimate the test
+error of this logistic regression model using the validation set approach.
+Do not forget to set a random seed before beginning your analysis.
+
+a) Fit a logistic regression model that uses `income` and `balance` to predict
+`default`.
+
+```{r}
+set.seed(42)
+
+logistic.fit <- glm(
+  default ~ income + balance,
+  family = "binomial",
+  data = Default
+)
+
+summary(logistic.fit)
+```
+
+b) Using the validation set approach, estimate the test error of this model.
+
+First, split the data into training, test, and validation sets.
+```{r}
+set.type <- sample(
+  c("train", "test", "validate"),
+  size = dim(Default)[1],
+  replace = TRUE,
+  prob = c(0.8*0.8, 0.2, 0.8*0.2)
+)
+
+test <- Default[set.type == "test", ]
+train <- Default[set.type == "train", ]
+validation <- Default[set.type == "validate", ]
+
+print((dim(test)[1] + dim(train)[1] + dim(validation)[1]) == dim(Default)[1])
+```
+
+Next, fit the logistic regression model using only the training observations.
+```{r}
+logistic.fit <- glm(
+  default ~ income + balance,
+  family = "binomial",
+  data = train
+)
+```
+
+Apply the model to the validation set and calculate the validation error:
+```{r}
+validation.pred <- predict(logistic.fit, validation, type = "response")
+
+validation.resp <- rep("No", length(validation.pred))
+validation.resp[validation.pred > 0.5] <- "Yes"
+
+table(validation.resp, validation$default)
+
+print(paste("Validation set error:", 
+            round(mean(validation.resp != validation$default), 4)))
+```
+
+The validation set error is quite low, with false positives occurring more often than false negatives.
+Let's see how well this matches the test error:
+```{r}
+test.pred <- predict(logistic.fit, test, type = "response")
+
+test.resp <- rep("No", length(test.pred))
+test.resp[test.pred > 0.5] <- "Yes"
+
+table(test.resp, test$default)
+
+print(paste("Test set error:",
+            round(mean(test.resp != test$default), 4)))
+```
+The validation set error closely matches that of the test error. 
+However, the class specific error rates match less well, especially the false positive rate.
+This is not suprising; since the number of true positives is very low, more variability is expected for the false positive rate.
+
+Let's apply the validation set approach multiple times with different splits to see how stable it's error estimations are.
+```{r}
+validation.fun <- function(seed, train, test, train.prop, validation.prop) {
+  set.seed(seed)
+
+  set.num <- sample(
+    c("train", "validation"), 
+    size = dim(train)[1],
+    replace = TRUE,
+    prob = c(train.prop, validation.prop)
+  )
+
+  validation <- train[set.num == "validation", ]
+  train <- train[set.num == "train", ]
+
+  temp.fit <- glm(
+    default ~ income + balance,
+    family = "binomial",
+    data = train
+  )
+
+  validation.pred <- predict(temp.fit, validation, type = "response")
+  validation.resp <- rep("No", length(validation.pred))
+  validation.resp[validation.pred > 0.5] = "Yes"
+  validation.err <- round(mean(validation.resp == validation$default), 4)
+  test.pred <- predict(temp.fit, test, type = "response")
+  test.resp <- rep("No", length(test.pred))
+  test.resp[test.pred > 0.5] <- "Yes"
+  test.err <- round(mean(test.resp == test$default), 4)
+  
+  print(paste("Validation error:", validation.err, "| Test error:", test.err))
+}
+
+
+set <- sample(
+  c("train", "test"),
+  size = dim(Default)[1],
+  replace = TRUE,
+  prob = c(0.8, 0.2)
+)
+train <- Default[set == "train", ]
+test <- Default[set == "test", ]
+for (i in 1:10) {
+  validation.fun(i, train, test, 0.8, 0.2)
+}
+```
+The validation and test error rates are consistently very close.
+
+
+
+
