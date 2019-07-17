@@ -154,5 +154,319 @@ for (i in 1:10) {
 The validation and test error rates are consistently very close.
 
 
+### 6) Estimate coefficient standard errors via bootstrap.
+We continue to consider the use of a logistic regression model to predict the probability of `default` using `income` and `balance` on the `Default` data set. In particular, we will no compute estimates for the standard errors of the `income` and `balance` logistic regression coefficients in two different ways: (1) using the bootstrap, and (2) using the standard formula for computing the standard errors in the `glm()` function. 
+
+(a) Using the `summary()` and `glm()` functions, determine the estimated standard errors for the coefficients associated with `income` and `balance` in a multiple logistic regression model that uses both predictors.
+
+```{r}
+model.fit <- glm(
+  default ~ income + balance,
+  data = Default,
+  family = "binomial"
+)
+summary(model.fit)
+```
+The standard error estimates for the coefficients associated with `income` and `balance` are $4.985\times10^{-6}$ and $2.27\times 10^{-4}$, respectively. Both have $p$-values which exceed the 95% confidence interval.
+
+(b) Write a function, `boot.fn()`, that takes as input the `Default` data set as well as an index of the observations, and that outputs the coefficient estimates for `income` and `balance` in the multiple logistic regression model.
+
+Recall that the `index` variable that `boot.fn()` accepts is a vector containing the indexes of the bootstrap observation set.  There are likely to be duplicates in the vector since bootstrap sets are sampled from the original data set with replacement.  The `subset` argument to the `glm()` function accepts a vector with duplicate index values.
+```{r}
+boot.fn <- function(data, index) {
+  model.fit <- glm(
+    default ~ income + balance,
+    data = data,
+    family = "binomial",
+    subset = index
+  )
+  model.fit$coefficients[2:3]
+}
+```
+
+(c) Use the `boot()` function together with your `boot.fn()` function to estimate the standard errors of the logistic regression coefficients for `income` and `balance`.
+
+```{r}
+boot(
+  data = Default,
+  statistic = boot.fn,
+  R = 1000
+)
+```
+
+(d) Comment on the estimated standard errors obtain using the `glm()` function and using your bootstrap function.
+
+The standard errors for the coefficients associated with `income` and `balance`
+were calculated to be $4.985\times10^{-6}$ and $2.274\times 10^{-4}$, respectively,
+when the whole `Default` data set was used for creating the logistic regression model.
+The bootstrap standard errors, which were created by drawing 1000 bootstrap samples 
+from the `Default` data set, were $4.911\times 10^{-6}$ and $2.296\times 10^{-4}$, 
+respectively. The bootstrap estimates differ from the true values by 1.48% for the
+`income` coefficient and by 0.967% for the `balance` coefficient.
+
+### 7) Estimate Test Error via LOOCV.
+In Sections 5.3.2 and 5.3.3, we saw that the `cv.glm()` function can be used in order to compute the LOOCV test error estimate. Alternatively, one could compute those quantities using just the `glm()` and `predict.glm()` functions, and a for loop. You will now take this approach in order to compute the LOOCV error for a simple logistic regression model on the `Weekly` data set. Recall that in the context of classificiation problems, the LOOCV error is
+given as the proportion of missclassified responses.
+
+a) Fit a logistic regression model that predicts `Direction` using `Lag1` and `Lag2`.
+
+```{r}
+logistic.fit <- glm(
+  Direction ~ Lag1 + Lag2,
+  data = Weekly,
+  family = "bimomial"
+)
+```
+
+b) Fit a logistic regression model that predicts `Direction` using `Lag1` and `Lag2` 
+using all but the first observation.
+```{r}
+logistic.fit.notone <- glm(
+  Direction ~ Lag1 + Lag2,
+  data = Weekly[-1,],
+  family = "binomial"
+)
+```
+
+c) Use the model from (b) to predict the direction of the first observation. Was this
+observation correctly classified?
+
+```{r}
+predict.one <- predict(logistic.fit.notone, Weekly[1,], type = "response")
+response.one <- ifelse(predict.one > 0.5, "Up", "Down")
+print(paste0(
+  "The LOOCV model created by leaving out the first observation predicted ",
+  response.one,
+  ", the true value was ",
+  Weekly[1,]$Direction))
+```
+The observation was not correctly classified.
+
+d) Write a for loop from $i=1$ to $i=n$, where $n$ is the number of observations in
+the data set, that fits a logistic regression model using all but the $i$th observation,
+predicts the direction of the $i$th observations, and returns a $1$ in case of error
+and $0$ in case of no error.
+
+```{r}
+misclassified.count <- 0
+
+for (i in 1:dim(Weekly)[1]) {
+  logistic.fit <- glm(
+    Direction ~ Lag1 + Lag2,
+    data = Weekly[-i,],
+    family = "binomial"
+  )
+  logistic.pred <- predict(logistic.fit, Weekly[i,], type = "response")
+  logistic.resp <- ifelse(logistic.pred > 0.5, "Up", "Down")
+  if (logistic.resp != Weekly[i,]$Direction) {
+    misclassified.count <- misclassified.count + 1
+  }
+}
+
+print(misclassified.count)
+```
+
+e) Take the average of the $n$ numbers obtained in (d) in order to obtain the LOOCV
+estimate for the test error. Comment on the results.
+
+```{r}
+100 * misclassified.count / dim(Weekly)[1]
+```
+The LOOCV estimate for the test error rate is 45%.  This would indicate that the 
+logistic model predicts the true movement of the stock market 55% of the time, which
+is quite good.  
+
+
+### 8) Cross validation on a simulated data set.
+
+a) Generate a simulated data set as follows:
+```{r}
+set.seed(1)
+y = rnorm(100)
+x = rnorm(100)
+y = x - 2*x^2 + rnorm(100)
+```
+In this data set, what is $n$ and what is $p$? Write out the model used to generate
+the data in equation form.
+
+In this data set $n=100$, the number of observations generated.  There are two
+predictor terms, $X$ and $X^2$ (a nonlinear transformation of $X$), so $p=2$. 
+Finally, the equation is $y=X-2X^2+\epsilon$.
+
+b) Create a scatterplot of $X$ against $Y$. Comment on what you find.
+
+```{r}
+ggplot(data.frame(x = x, y = y), aes(x = x, y = y)) +
+  geom_point()
+```
+
+c) Set a random seed, and then compute the LOOCV errors that result from fitting
+$Y = \beta_0 + \sum_{i=1}^N \beta_i X^i + \epsilon$ for $i=1,2,3,4$.
+
+First, create a function which calculates LOOCV for the model $Y = \beta_0 + \sum_{i=1}^N\beta_i X^N$
+for a given `power` of $N$.
+```{r}
+loocv.error <- function(data, power) {
+  loocv.mse <- 0
+  for (i in 1:length(data)) {
+    fit <- lm(y ~ poly(x, degree = power, raw = TRUE), data[-i, ])
+    predicted <- predict(fit, data[i,])
+    mse <- (data[i,]$y - predicted)^2
+    loocv.mse <- loocv.mse + mse
+  }
+  loocv.mse / dim(data)[1]
+}
+```
+Run the above function for the different powers.
+```{r}
+data <- data.frame(x = x, y = y)
+
+set.seed(1)
+
+for (i in 1:4) {
+  print(paste0("The LOOCV error for i = ", i, " is ", loocv.error(data, i), "."))
+}
+```
+
+d) Repeat (c) using another random seed, and report your results. Are the results
+the same as what you got in (c)? Why?
+
+```{r}
+set.seed(2) 
+
+for (i in 1:4) {
+  print(paste0("The LOOCV error for i = ", i, " is ", loocv.error(data, i), "."))
+}
+```
+The results are the same since least squares linear regression has a unique solution
+in the case that the rows of $X$ (i.e. the observations) are linearly independent.
+In this case, a random seed would not effect the outcome. So let's check the 
+linearly independent row assumption (i.e. the assumption that the matrix $[1 X]$
+has full rank).
+In our case, it suffices to check that all values of $X$ are distinct and not equal to 
+$0$ or $1$ so that $ax_{i1}+b\neq cx_{j1}+d$ whenever it is not the case taht $a=c$ 
+and $b = d$.
+```{r}
+(sum(x == 0) + sum(x == 1)) == 0
+
+length(unique(x)) == length(x)
+```
+
+e) Which of the models in (c) had the smallest LOOCV error? Is this what you expected?
+
+The model with the squared error term had the smallest LOOCV error. I would have 
+expected this since
+we are dealing with an estimation of the test error and not the training
+error, it is not true that we expect the error to decrease as more terms are
+added.  Since the true model is $X + X^2$, the bias is lowest when $i=2$.
+The variance increases as $i$ increases, so the optimum bias/variance trade off
+is at $i=2$.
+
+f) Comment on the statistical significance of the coefficient estimates that results
+from fitting each of the models in (c) using least squares. Do these results agree
+with the conclusions drawn based on the cross-validation results?
+
+
+
+### 9) Coefficient standard error using bootstrap.
+
+a) Based on the `Boston` data set, provide an estimation for the population mean
+of `medv`. Call this estimate $\hat{\mu}$.
+
+```{r}
+mu <- mean(Boston$medv)
+print(mu)
+```
+
+b) Provide an estimate of the standard error of $\hat{\mu}$. Interpret this result.
+Recall that we can compute the standard error of the sample mean by dividing the
+sample standard deviation by the square root of the number of observations.
+
+```{r}
+se.mu <- sd(Boston$medv) / sqrt(dim(Boston)[1])
+print(se.mu)
+```
+
+c) Now estimate the standard error of $\hat{\mu}$ using the bootstrap.  How does
+this compare to your answer from (b)?
+
+First, create a function which accepts the data set and a vector of bootstrap indexes
+and returns the statistic of interest (in this case, the mean of `medv`).
+```{r}
+mu.bootstrap <- function(data, index) {
+  mean(data$medv[index])
+}
+```
+Now, call `boot` to create the bootstrap approximation:
+```{r}
+set.seed(2)
+boot(Boston, mu.bootstrap, 1000)
+```
+The bootstrap estimate of the population mean matches the sample mean, but the 
+standard error is slightly higher.
+
+d) Based on your bootstrap estimate from (c), provide a 95% confidence interval 
+for the mean of `medv`.  Compare it to the results obtained using `t.test(Boston$medv)`.
+
+Recall that a $100(1-\alpha)$% confidence interval can be calculated by 
+determining the $\alpha/2$ quantile of the $t$ distribution with $n-p$
+degrees of freedom $t_{\alpha/2,n-p}$ and then constructing the interval 
+$\hat{\mu}\pm t_{\alpha/2,n-p}\text{SE}(\hat{\mu})$.  For our problem, $\alpha=0.05$,
+$n=506$, $p=1$, $\hat{\mu}=22.5328$, and $\text{SE}(\hat{\mu})=0.4192$.
+The $t$ value to use is then `qt(0.025, 505, lower.tail = TRUE)` (i.e. the $0.025$ 
+quantile of the $t$ distribution with $505$ degrees of freedom; `lower.tail=F`
+means we are looking for the postive value on the RHS of the $t$-distribution).
+```{r}
+lower.limit <- 22.5328 - qt(0.025, 505, lower.tail = FALSE) * 0.4192
+upper.limit <- 22.5328 + qt(0.025, 505, lower.tail = FALSE) * 0.4192
+interval <- c(lower.limit, upper.limit)
+print(interval)
+```
+
+Now use the built in `R` function, `t.test`:
+```{r}
+t.test(Boston$medv)
+```
+The results are very similar, with the confidence interval for the `t.test` result
+being slightly smaller than the bootstrap result. 
+
+e) Based on this data set, provide an estimate, $\hat{\mu}_{med}$, for the median
+value of `medv` in the population.
+
+```{r}
+mu.med <- median(Boston$medv)
+print(mu.med)
+```
+
+f) We now would like to estimate the standard error of $\hat{\mu}_{med}$.
+Unfortunately, there is no simple formula for computing the standard error of the median.
+Instead, estimate the standard error of the median using the bootstrap. Comment
+on your findings.
+
+```{r}
+mu.med.bootstrap <- function(data, index) {
+  median(data$medv[index])
+}
+
+boot(Boston, mu.med.bootstrap, 1000)
+```
+The bootstrap standard error for the median was 10% smaller than the bootstrap 
+standard error for the mean.
+
+g) Based on this data set, provide an estimate for the tenth percentile of `medv`
+in Boston suburbs.  Call this quantity $\hat{\mu}_{0.1}$. (You can use the 
+`quantile()` function.)
+
+```{r}
+mu.1 <- quantile(Boston$medv, probs = 0.1)
+print(mu.1)
+```
+
+h) Use the bootstrap to estimate the standard error of $\hat{\mu}_{0.1}$.
+Comment on your findings.
+
+```{r}
+boot(Boston, function(data, index) { quantile(data[index,]$medv, probs = 0.1) }, 1000)
+```
 
 
