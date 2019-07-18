@@ -1,0 +1,465 @@
+---
+title: "Chapter 6 Applied Exercises"
+author: "ZackBarry"
+date: "7/6/2019"
+output: 
+  html_document:
+  toc: true
+toc_depth: 2
+number_sections: true
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ISLR)
+library(dplyr)
+library(ggplot2)
+library(MASS) # for lda()
+library(class) # for knn()
+library(boot) # for cv.glm() and boot()
+library(MVN)  # for checking for multivariate normal distributions
+# ^ need to install jags directly from 
+#    https://sourceforge.net/projects/mcmc-jags/files/JAGS/4.x/Mac%20OS%20X/
+#   before installing MVN
+library(leaps) # for regsubsets()
+library(glmnet)  # for glmnet() (ridge/lasso regression)
+library(pls)  # for pcr()
+
+select <- dplyr::select # avoid namespace collision with MASS
+filter <- dplyr::filter  
+```
+
+## 8) Best subset selection.
+
+a) Use the `rnorm()` function to generate a predictor $X$ of length $n=100$, as
+well as a noise vector $\epsilon$ of length $n=100$.
+
+```{r}
+set.seed(1)
+
+X <- rnorm(100)
+eps <- rnorm(100)
+```
+
+b) Generate a response vector $Y$ according to the model
+$$ Y = \beta_0 + \beta_1 X + \beta_2 X^2 + \beta_3 X^3 + \epsilon $$
+where $\beta_i$ are constants of your choice.
+
+```{r}
+Y = 4 + 1*X + -7*X^2 + 23*X^3 + eps
+```
+
+c) Use the `regsubsets()` funtion to perform best subset selection in order to 
+choose the best model containing the predictors $X,X^2,\ldots,X^{10}$. What is
+the best model obtained according to $C_p$, BIC, and adjusted $R^2$?
+Show some plots to provide evidence for your answer, and report the coefficients
+of the best model obtained. 
+
+```{r}
+all.data <- data.frame(X = X, Y = Y)
+reg.fit <- regsubsets(Y ~ poly(X, degree = 10, raw = TRUE), all.data, nvmax = 10)
+
+reg.sum <- summary(reg.fit)
+print(paste(
+  "The lowest BIC value was found when using", 
+  which.min(reg.sum$bic),
+  "variables."
+))
+print(paste(
+  "The highest adjusted R2 value was found when using", 
+  which.max(reg.sum$adjr2),
+  "variables."
+))
+print(paste(
+  "The lowest Cp value was found when using", 
+  which.min(reg.sum$cp),
+  "variables."
+))
+```
+The adjusted training error statistics have different values indicate that the
+inclusion of 3 or 4 variables results in the best fit. Let's look at some plots
+to see their overall behavior:
+```{r}
+par(mfrow = c(1,3))
+reg.plot <- data.frame(
+  var.count = seq(1,10),
+  bic = reg.sum$bic,
+  adjr2 = reg.sum$adjr2,
+  cp = reg.sum$cp
+)
+ggplot(reg.plot, aes(x = var.count, y = bic)) +
+  geom_point() +
+  geom_line()
+ggplot(reg.plot, aes(x = var.count, y = adjr2)) +
+  geom_point() +
+  geom_line()
+ggplot(reg.plot, aes(x = var.count, y = cp)) +
+  geom_point() +
+  geom_line()
+par(mfrow = c(1,1))
+```
+
+In each of the plots, the difference between including 3 or 4 variables is
+negligible.  We are tempted to use 3 variables to improve model interpretability 
+and to avoid overfitting. Let's see what the coefficients of that model are:
+```{r}
+coef(reg.fit, 3)
+```
+The model is approximated as 
+$$ Y = 4.06 + 0.98X - 7.12X^2 + 23.02 X^3 $$
+which is very close to the true model. Let's consider the 4-variable fit as well:
+```{r}
+coef(reg.fit, 4)
+```
+The 4th order fit is also very close; it adds the 5th order term into the model, 
+but uses a small coefficient.
+
+
+d) Repeat (c) using forward and backward stepwise selection. Compare results.
+
+```{r}
+fwd.fit <- regsubsets(
+  Y ~ poly(X, degree = 10, raw = TRUE), 
+  all.data,
+  nvmax = 10,
+  method = "forward"
+)
+fwd.sum <- summary(fwd.fit)
+
+bwd.fit <- regsubsets(
+  Y ~ poly(X, degree = 10, raw = TRUE),
+  all.data,
+  nvmax = 10,
+  method = "backward"
+)
+bwd.sum <- summary(bwd.fit)
+
+print(paste("The min BIC for foward selection used",
+            which.min(fwd.sum$bic),
+            "variables; backward used",
+            which.min(bwd.sum$bic)
+           )
+)
+print(paste("The max adj. R2 for foward selection used",
+            which.max(fwd.sum$adjr2),
+            "variables; backward used",
+            which.max(bwd.sum$adjr2)
+           )
+)
+print(paste("The min Cp for foward selection used",
+            which.min(fwd.sum$cp),
+            "variables; backward used",
+            which.min(bwd.sum$cp)
+           )
+)
+```
+The results for forward, backward, and best subset selection were the same in 
+terms of the number of variables to minimize BIC and Cp and to maximize the
+adjusted $R^2$ value. Let's compare the 3 variable model coefficients:
+
+First, check that the variables used are the same:
+```{r}
+names(coef(fwd.fit, 3)) == names(coef(bwd.fit, 3))
+names(coef(fwd.fit, 3)) == names(coef(reg.fit, 3))
+```
+
+Now we can construct a data frame of coefficient values with one variable per row:
+```{r}
+data.frame(
+  subset.vars = names(coef(reg.fit, 3)),
+  subset.sel = coef(reg.fit, 3),
+  forward.sel = coef(fwd.fit , 3),
+  backward.sel = coef(bwd.fit , 3)
+)
+```
+Of course, all the coefficients agree since each of the fitting procedures is the
+same; the coefficients would only differ if, say, forward selection used a quartic
+term instead of a quadratic term.
+
+
+e) Now fit a lasso model to the simulated data, again using $X$, $X^2$,..., $X^{10}$
+as predictors. Use cross-validation to select the optimal value of $\lambda$.
+Report the resulting coefficient estimates, and discuss the results obtained.
+
+```{r}
+cv.lambda <- cv.glmnet(
+  x = poly(X, degree = 10, raw = TRUE),
+  y = Y,
+  alpha = 1
+)
+
+lasso.fit <- glmnet(
+  x = poly(X, degree = 10, raw = TRUE),
+  y = Y,
+  alpha = 1
+)
+
+predict(lasso.fit, type = "coefficient", s = cv.lambda$lambda.min)
+```
+The lasso fit, which performs variable selection, successfuly selected the correct
+variables.  However, the coefficient estimates were worse than the subset selection
+method.
+
+Note that in subset selection, the nonzero parameters will (only) be unbiased
+if the removed predictors all have true coefficient values of 0. Lasso
+regression has bias introduced due to the selection of the parameter $\lambda$.
+In the example above, where subset selection resulted in unbiased coefficients
+it is not suprising that it outperformed lasso regression.  However, if we
+did not know the true model, it would be much hard to tell if this were the case.
+It would probably be better to stick with lasso regression since it errs on the
+side of including more potential predictors (depending on how large $\lambda$ is).
+
+f) Now generate a response vector $Y$ according to the model
+$$ Y =\beta_0+\beta_7 X^7 + \epsilon$$
+and perform best subset selection and the lasso. Discuss the results.
+
+```{r}
+Y = 4 + 33 * X^7 + eps
+```
+
+We'll do the best subset method first:
+```{r}
+reg.fit <- regsubsets(
+  Y ~ poly(X, power = 10, raw = TRUE),
+  data.frame(Y = Y, X = X),
+  nvmax = 10
+)
+reg.sum <- summary(reg.fit)
+which.min(reg.sum$bic)
+which.min(reg.sum$cp)
+which.max(reg.sum$adjr2)
+```
+The three adjusted training errors disagree with regards to the number of variables
+to include in the model. Let's look at their graphs to see if we can find a
+good comprimise:
+```{r}
+errs <- data.frame(
+  var.count = seq(1, 10),
+  bic = reg.sum$bic,
+  cp = reg.sum$cp,
+  adjr2 = reg.sum$adjr2
+)
+par(mfrow = c(1,3))
+ggplot(errs, aes(x = var.count, y = bic)) +
+  geom_point() +
+  geom_line()
+ggplot(errs, aes(x = var.count, y = cp)) +
+  geom_point() +
+  geom_line()
+ggplot(errs, aes(x = var.count, y = adjr2)) +
+  geom_point() +
+  geom_line()
+par(mfrow = c(1,1))
+```
+Adjusted $R^2$ performs best at $N=3,4$, but BIC steadily increases as $N$ increases;
+$C_p$ is similarly small for $N=1,2,3$. We select $N=2$ as a comprimise. Let's
+look at the coefficients for that model:
+```{r}
+coef(reg.fit, 2)
+```
+This is very close to the true model. Let's see how it compares to lasso regression
+with $\lambda$ selected via cross validation:
+```{r}
+cv.lambda <- cv.glmnet(
+  x = poly(X, power = 10, raw = TRUE),
+  y = Y,
+  alpha = 1
+)
+lasso.fit <- glmnet(
+  x = poly(X, power = 10, raw = TRUE),
+  y = Y,
+  lambda = cv.lambda$lambda.min
+)
+predict(lasso.fit, type = "coefficient", s = cv.lambda$lambda.min)
+```
+Lasso regression performs slightly worse than best subset selection for the same
+number of coefficients. See the discussion at the end of part (e).
+
+We could have reasonably selected $N=3$ for best subset selection, though, lets
+see how that performs: 
+```{r}
+coef(reg.fit, 3)
+```
+It still outperforms lasso regression.
+
+
+## PCR using `ISLR::College`
+
+We will be predicting the number of applications received.
+
+a) Split the data into a training set and a test set.
+```{r}
+train <- sample(c(TRUE, FALSE), nrow(College), replace = T, prob = c(0.8, 0.2))
+
+train.set <- College[train, ]
+test.set <- College[!train, ]
+```
+
+b) Fit a linear model using least squares on the training set, and report the test
+error obtained.
+```{r}
+linear.fit <- lm(Apps ~ ., data = train.set)
+summary(linear.fit)
+test.pred <- predict(linear.fit, test.set)
+linear.mse <- mean((test.pred - test.set$Apps)^2)
+print(paste("The test MSE for the linear model is", linear.mse))
+```
+The test MSE is very poor though most of the coefficients are statistically
+significant.
+
+
+c) Fit a ridge regression model on the training set, with $\lambda$ chosen
+by cross-validation. Report the test error obtained.
+
+Recall that to use `glmnet()`, we need to create a matrix version of $X$ in which the 
+categorical predictors are already coded to dummy variables.
+```{r}
+train.mat <- model.matrix(Apps ~ ., train.set)[, -1]
+
+lambda.cv <- cv.glmnet(
+  x = train.mat,
+  y = train.set$Apps,
+  alpha = 0
+)
+ridge.fit <- glmnet(
+  x = train.mat,
+  y = train.set$Apps,
+  alpha = 0
+)
+ridge.coeff <- predict(ridge.fit, type = "coefficient", s = lambda.cv$lambda.min)
+ridge.mse <- mean((model.matrix(Apps ~ ., test.set) %*% ridge.coeff - test.set$Apps)^2)
+ridge.mse
+```
+The test MSE for ridge regression is slightly higher than the ordinary least
+squares solution.
+
+
+d) Fit a lasso model on the training set, with $\lambda$ chosen by cross-validation.
+Report the test error obtained, along with the number of non-zero coefficient
+estimates.
+
+All we need to do is repeat the process for ridge regression with `alpha = 1` 
+instead of `alpha = 0`. Report the test error obtained, along with the number
+of non-zero coefficient estimates.
+```{r}
+train.mat <- model.matrix(Apps ~ ., train.set)[, -1]
+
+lambda.cv <- cv.glmnet(
+  x = train.mat,
+  y = train.set$Apps,
+  alpha = 1
+)
+lasso.fit <- glmnet(
+  x = train.mat,
+  y = train.set$Apps,
+  alpha = 1
+)
+lasso.coeff <- predict(lasso.fit, type = "coefficient", s = lambda.cv$lambda.min)
+lasso.mse <- mean((model.matrix(Apps ~ ., test.set) %*% lasso.coeff - test.set$Apps)^2)
+lasso.mse
+```
+The test MSE for the lasso fit is an improvement over both OLS and ridge 
+regression. Let's see how many coefficients it set to zero:
+```{r}
+lasso.coeff
+```
+Lasso regression set `F.Undergrad`, `Books`, and `perc.alumni` to zero.
+We note that neither `Books` nor `perc.alumni` had statistically significant
+coefficients in the OLS fit.
+
+
+e) Fit a PCR model on the training set, with $M$ chosen by cross-validation.
+Report the test error obtained, along with the value of $M$ as selected by 
+cross-validation.
+
+Recall that we need to center the variables before applying Primary Component
+Regression.
+```{r}
+pcr.fit <- pcr(
+  Apps ~ ., 
+  data = train.set, 
+  validation = "CV",
+  center = TRUE
+)
+summary(pcr.fit)
+```
+95% of the variance in the predictors is explained by using just 3 components, 
+and 100% is explained using 9 components. Similarly, the percent variance 
+of `Apps` begins to level off after 5 components are used. Let's consider the
+behavior of the mean squared error:
+```{r}
+validationplot(pcr.fit, val.type = "MSEP")
+```
+MSE starts to level off after 6 components are added. Let's calculate the
+test error:
+```{r}
+pcr.pred <- predict(pcr.fit, test.set, ncomp = 6)
+pcr.mse <- mean((pcr.pred - test.set$Apps)^2)
+pcr.mse
+```
+PCR performs worse than ridge and lasso regression and OLS regression.
+
+
+f) Fit a PLS model on the training set, with $M$ chosen by cross-validation.
+Report the test error obtained, along with the value of $M$ selected by
+cross-validation.
+
+```{r}
+pls.fit <- plsr(
+  Apps ~ ., 
+  data = train.set, 
+  validation = "CV",
+  center = TRUE
+)
+summary(pls.fit)
+```
+PLS has similar variance results for the training set as in PCR.
+
+```{r}
+validationplot(pls.fit, val.type = "MSEP")
+```
+The training MSE for PLS levels off a bit earlier than for PCR, with $M=5$ 
+seeming to be a good fit.
+
+```{r}
+pls.pred <- predict(pls.fit, test.set, ncom = 5)
+pls.mse <- mean((pls.pred - test.set$Apps)^2)
+pls.mse
+```
+PLS performs slightly worse than PCR.
+
+
+g) Comment on the results obtained. How accurately can we predict the number of
+college applications received? Is there much difference among the test errors
+resulting from these five approaches?
+
+First, let's get a picture of how close the results of the best fitting model 
+(that which used lasso regression) compare to the true values.
+```{r}
+lasso.pred <- as.vector(model.matrix(Apps ~ ., test.set) %*% lasso.coeff)
+ggplot(data.frame(x = test.set$Apps, y = lasso.pred), aes(x, y)) +
+  geom_point() +
+  labs(title = "lasso regression results vs true Apps values",
+       x = "true value",
+       y = "lasso regression"
+  )
+ggplot(data.frame(x = test.set$Apps, y = lasso.pred - test.set$Apps), aes(x, y)) +
+  geom_point() +
+  labs(title = "lasso regression residuals vs true Apps values",
+       x = "true value",
+       y = "residuals"
+  )
+```
+The residuals are slightly heteroscedastic, but uncorrelated with mean close to zero.
+The lasso model appears to be a good fit for colleges where `Apps` is larger than
+2500, but poor for colleges where `Apps` is near zero.
+
+
+
+
+
+
+
+
+
+
