@@ -1,0 +1,387 @@
+---
+title: "Chapter 6 Lab"
+author: "ZackBarry"
+date: "7/6/2019"
+output: 
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ISLR)
+library(dplyr)
+library(ggplot2)
+library(MASS) # for lda()
+library(class) # for knn()
+library(boot) # for cv.glm() and boot()
+library(MVN)  # for checking for multivariate normal distributions
+# ^ need to install jags directly from 
+#    https://sourceforge.net/projects/mcmc-jags/files/JAGS/4.x/Mac%20OS%20X/
+#   before installing MVN
+library(leaps) # for regsubsets()
+library(glmnet)  # for glmnet() (ridge/lasso regression)
+library(pls)  # for pcr()
+
+select <- dplyr::select # avoid namespace collision with MASS
+filter <- dplyr::filter  
+```
+
+# Lab 1: Subset Selection Methods
+
+## Best Subset Selection
+
+We will apply the best subset selection approach to the `Hitters` data set to
+predict `Salary` baed on other statistics. Since some response values are missing,
+we will remove them.
+```{r}
+sum(is.na(Hitters$Salary))
+Hitters <- na.omit(Hitters)  # omits all rows with NA values
+sum(is.na(Hitters$Salary))
+```
+
+The `leaps::regsubsets()` function performs best subset selection by identifying
+the best model that contains any given number of predictors, where best is
+quantified using RSS. The syntax is the same as for `lm()`, and `summary()` 
+outputs the best set of variables for each model size. The maximum model size
+(in terms of the number of predictors) used can be specified via the `nvmax`
+argument.  Below, we specify we only want to fit up to a 6 variable model.
+```{r}
+regfit.full <- regsubsets(Salary ~ ., Hitters, nvmax = 6)
+summary(regfit.full)
+```
+The variables with an asterisk beneath their names in row $R$ are the $R$ best
+variables to use in a model with only $R$ variables.  In the above result, we
+see that the best model with a single variable leverages `CRBI` while the best
+model with 3 variables leverages `Hits`, `CRBI`, and `PutOuts`.
+
+We can also access some statistics about the model fits via the `summary()` 
+function.  This will allow us to select the best overall model fit.
+Recall that training error statistics are not helpful for determining the best
+model fit since they should in general improve with the addition of more 
+variables.  The statistics plotted below, adjusted $R^2$, Bayesian information
+criterion (BIC), and the $C_p$ statistic take different approaches for
+ajusting the training error relative to the size of the model used.
+```{r}
+regfit.full <- regsubsets(Salary ~ ., Hitters, nvmax = dim(Hitters)[2] - 1)  # use all variables
+reg.summary <- summary(regfit.full)
+
+variable.count <- seq(1, dim(Hitters)[2] - 1)
+par(mfrow = c(2,2))
+ggplot(data.frame(x = variable.count, y = reg.summary$rss), aes(x, y)) +
+  geom_line() +
+  labs(title = "RSS")
+ggplot(data.frame(x = variable.count, y = reg.summary$adjr2), aes(x, y)) +
+  geom_line() +
+  labs(title = "Adjusted R^2")
+ggplot(data.frame(x = variable.count, y = reg.summary$cp), aes(x, y)) +
+  geom_line() +
+  labs(title = "C_p")
+ggplot(data.frame(x = variable.count, y = reg.summary$bic), aes(x, y)) +
+  geom_line() +
+  labs(title = "BIC")
+par(mfrow = c(1,1))
+```
+Adjusted $R^2$ and $C_p$ are the lowest when 10 predictors are used and BIC is
+lowest when 6 or 8 predictors are used. Let's look at the coefficients for the
+model with 8 predictors:
+```{r}
+coef(regfit.full, 8)
+```
+
+## Forward and Backward Stepwise Selection
+We can also use the `regsubsets` function to perform forward stepwise or 
+backward stepwise selection, using the argument `method="forward"` or
+`method="backward"`.
+```{r}
+regfit.fwd <- regsubsets(
+  Salary ~ ., 
+  data = Hitters, 
+  nvmax = 8,
+  method = "forward"
+)
+regfit.bwd <- regsubsets(
+  Salary ~ .,
+  data = Hitters,
+  nvmax = 8,
+  method = "backward"
+)
+summary(regfit.bwd)$outmat
+```
+
+Let's see where each of the methods agree and disagree for the model with 8
+variables
+```{r}
+"subset selection coefficients:"
+coef(regfit.full, 8)
+"forward selection coefficients:"
+coef(regfit.fwd, 8)
+"backward selection coefficients:"
+coef(regfit.bwd, 8)
+```
+The forward and subset selection methods resulted in the same 8-variable fit, 
+but the backward method was slightly different: it includes `CHmRun` instead
+of `CRBI` (i.e. number of career home runs vs. career RBIs).
+
+## Choosing among models using the validation set and CV approaches
+
+To apply cross validation or CV estimates of the test error for variable 
+selection purposes, we should begin by splitting our data set into a train
+and a test set:
+```{r}
+set.seed(1)
+train = sample(c(TRUE, FALSE), size = nrow(Hitters), replace = TRUE)
+test = (!train)
+```
+
+Now we can apply `regsubsets()` to the training set in order to perform best 
+subset selection.
+```{r}
+regfit.best <- regsubsets(Salary ~ ., data = Hitters[train,], nvmax = 19)
+```
+
+Recall that we can extract the coefficients of the best subset model with $i$
+variables from `regfit.best`, but we can not use `predict` to calculate the
+test error. Thus, we need to do some matrix multiplication. The `model.matrix()`
+function builds a numeric model matrix $X$ from data; as part of the creation it
+creates dummy variables for categorical variables so that they can be used as 
+predictors for linear regression models.
+
+```{r}
+val.errors <- rep(0,19)
+for (i in 1:19) {
+  model.coef <- coef(regfit.best, i)
+  test.pred.matrix <- model.matrix(Salary ~ ., data = Hitters)[test, names(model.coef)]
+  test.pred <- test.pred.matrix %*% as.matrix(model.coef)
+  err <- mean((test.pred - Hitters[test, ]$Salary)^2)
+  val.errors[i] <- err
+}
+ggplot(data.frame(num.vars = seq(1,19), test.mse = val.errors), aes(x = num.vars, y = test.mse)) +
+  geom_line()
+```
+We find that the validation set test MSE is lowest when 10 variables are included.
+Note that this does not necessarily mean that the best fit on the whole data
+set includes the same 10 variables as the test set, just that 10 variables
+is the point where the test set MSE indicates that the bias-variance trade off
+is optimized.  To pick a final model, we find the best 10 variable subset of the
+whole data set:
+```{r}
+regfit.best <- regsubsets(Salary ~ ., data = Hitters, nvmax = 10)
+coef(regfit.best, 10)
+```
+
+
+Now let's use $k$-fold cross validation to find the optimal model size.
+First, split our data set up into 10 folds:
+```{r}
+folds <- sample(seq(1,10), size = nrow(Hitters), replace = TRUE)
+```
+
+Now we fit 10 different models, one for each of the folds that can be left out
+of the training set to act as the test set.
+```{r}
+cv.errors <- matrix(NA, nrow = 19, ncol = 10)
+
+for (j in 1:10) {
+  best.fit <- regsubsets(Salary ~ ., data = Hitters[folds != j,], nvmax = 19)
+  for (i in 1:19) {
+      model.coef <- coef(best.fit, i)
+      test.pred.matrix <- model.matrix(Salary ~ ., data = Hitters)[folds == j, names(model.coef)]
+      test.pred <- test.pred.matrix %*% as.matrix(model.coef)
+      err <- mean((test.pred - Hitters[folds == j, ]$Salary)^2)
+      cv.errors[i, j] <- err
+  }
+}
+cv.errors
+```
+Now we have the MSE for the best training model of each variable size $i$ over 
+each test fold $j$.  The last step before selecting a model is to average the MSE
+values for each size model.
+```{r}
+kfold.mse <- apply(cv.errors, 1, mean)
+ggplot(data.frame(variable.count = seq(1,19), kfold.mse = kfold.mse), 
+       aes(x = variable.count, y = kfold.mse)) +
+  geom_line()
+which.min(kfold.mse)
+```
+10-fold CV predicted the 8 variable model to have the lowest test MSE, differing
+from the validation set approach which predicted the 10 variable model.
+
+
+# Lab 2: Ridge Regression and the Lasso
+
+We will use the `glmnet` package in order to perform ridge regression and the 
+lasso.  The main function in this package is `glmnet()` which can be used to 
+fit ridge regression models, lasso models, and much more. Instead of passing a 
+formula `y ~ x1 + x2 + ...` and a data frame as in other fitting procedures such 
+as `lm()`, we pass a vector of responses `y` and a matrix of predictors `x`.
+```{r}
+x <- model.matrix(Salary ~ ., Hitters)[, -1]  # remove intercept column
+y <- Hitters$Salary
+```
+
+The `glmnet()` function has an `alpha` argument that determines what type of model
+is fit. If `alpha = 0` then a ridge regression model is fit, and if `alpha=1` then
+a lasso model is fit. Recall that ridge
+and lasso regressions are associated with a tuning parameter $\lambda$ which 
+controls the variable size penalization (the larger $\lambda$ is, the more large
+variables are penalized; $\lambda=0$ is the same as RSS and $\lambda=\infty$ is the
+same as the null model).  `glmnet()` will automatically
+try a selection of $\lambda$ values, but we can also previde it with a range via the `lambda` parameter.
+
+## Ridge Regression
+
+We first fit a ridge regression model with a custom set of $\lambda$ values:
+```{r}
+library(glmnet)
+lambda.grid <- 10^seq(10, -2, length = 100)
+ridge.mod <- glmnet(x, y, alpha = 0, lambda = lambda.grid)
+```
+Note that `coef(ridge.mod)` is a matrix with a row for each predictor
+(including the intercept) and a column for each choice of $lambda$.  In our
+case, a $20\times 100$ matrix. Let's plot the $l_2$ norm of the predictor 
+coefficients against $\lambda$ to check that they do indeed shrink as $\lambda$ grows,
+remembering to not include the intercept value.
+```{r}
+l2 <- apply(coef(ridge.mod), 2, function(x) { mean(x[-1]^2) })
+ggplot(data.frame(lambda = lambda.grid, l2 = l2), aes(x = lambda, y = l2)) +
+  geom_line() + 
+  scale_x_log10()
+```
+
+Now, let's use the validation set approach to select the best value of $\lambda$.
+We can use `cv.glmnet()` for this purpose.
+```{r}
+set.seed(1)
+
+train <- sample(c(TRUE, FALSE), size = nrow(Hitters), replace = TRUE)
+test <- (!train)
+
+cv.out <- cv.glmnet(
+  x = x[train,], 
+  y = y[train], 
+  alpha = 0, 
+  nfolds = 10
+)
+ggplot(data.frame(kfold.mse = cv.out$cvm, lambda = cv.out$lambda), 
+       aes(x = lambda, y = kfold.mse)) +
+  geom_line() +
+  scale_x_log10()
+print(cv.out$lambda.min)
+```
+We see that the value of $\lambda$ that results in the smallest cross-validation error is 256. Let's check the test MSE associated with $\lambda=256$:
+```{r}
+ridge.pred <- predict(ridge.mod, s = 256, newx = x[test, ])
+mean((ridge.pred - y[test])^2)
+```
+
+Finally, we refit our ridge regression model on the full data set, using the
+value of $\lambda$ chosen by cross validation and examine the coefficient 
+estimates:
+```{r}
+out <- glmnet(x, y, alpha = 0)
+predict(out, type = "coefficients", s = 256)[1:20,]
+```
+Notice that all of the coefficients are nonzero - ridge regression does not
+perform variable selection.
+
+
+## The Lasso
+
+We saw that there was a ridge regression solution which outperformed the least
+squares and the null solution on the `Hitters` set. We will now check if 
+lasso regression can improve on ridge regression. We'll use the `glmnet()` function
+with `alpha=1`.
+
+```{r}
+lasso.mod <- glmnet(x[train,], y[train], alpha = 1, lambda = lambda.grid)
+```
+
+The lasso model performs variable selection:
+```{r}
+nonzero.count <- apply(coef(lasso.mod), 2, function(x) { sum(abs(x) > 1e-13) - 1 })
+ggplot(data.frame(lambda = lambda.grid, nonzero.count = nonzero.count),
+       aes(x = lambda, y = nonzero.count)) +
+  geom_line() +
+  scale_x_log10()
+```
+We see that as $\lambda$ grows in size the number of nonzero variables decreases
+to 0 -- variable selection is being performed.
+
+Now let's select the optimal $\lambda$ value according to cross-validation 
+and compare the resulting test error rate to that of ridge regression.
+```{r}
+set.seed(1)
+cv.out <- cv.glmnet(x[train, ], y[train], alpha = 1)
+best.lambda <- cv.out$lambda.min
+lasso.pred <- predict(lasso.mod, s = best.lambda, newx = x[test, ])
+mean((lasso.pred - y[test])^2)
+```
+
+Lasso regression performs a fair amount worse than ridge regression, but
+it may be more interpretable if it set a number of coefficients to 0.
+Let's find the lasso model by fitting the whole data set with $\lambda$ as selected
+by cross validation.
+```{r}
+out <- glmnet(x, y, alpha = 1, lambda = best.lambda)
+lasso.coef <- predict(out, type = "coefficients", s = best.lambda)[1:20,]
+lasso.coef
+```
+We see that 10 of the coefficients have been set to 0, leaving 9 variables in 
+the model. 
+
+
+# PCR and PLS Regression
+
+
+## Principle Components Regression
+
+Principle components regression (PCR) can be performed using the `pcr()` function,
+which is part of the `pls` library. We now apply PCR to the `Hitters` data, in order
+to predict `Salary`. Again, ensure that the missing values have been removed from 
+the data.
+
+```{r}
+set.seed(2)
+pcr.fit <- pcr(Salary ~ ., data = Hitters, scale = TRUE, validation = "CV")
+```
+
+The syntax for the `pcr()` function is similar to that for `lm()`, with a 
+few additional options. Setting `scale=TRUE` has the effect of standardizing each
+predictor prior to generating the principal components, so that the scale on which
+each variable is measured will not have an effect.
+Setting `validation="CV"` causes `pcr()` to compute the ten-fold cross-validation
+error for each possible value of $M$, the number of principal components used.
+The resulting fit can be examined using `summary()`:
+```{r}
+summary(pcr.fit)
+```
+The CV score is provided for each possible number of components, ranging from 
+$M=0$ onwards. We can plot the cross-validation scores using the build in `pls`
+function `validationplot()`:
+```{r}
+validationplot(pcr.fit, val.type = "MSEP")
+```
+The smallest mean squared error occurs when 16 components are used, but 
+the cross-validation error is roughly the same when only 1 component is used.
+
+We now perform PCR on the training data and evaluate its test set performance.
+```{r}
+set.seed(1)
+pcr.fit = pcr(Salary ~ ., data = Hitters, subset = train, scale = TRUE, validation = "CV")
+validationplot(pcr.fit, val.type = "MSEP")
+```
+Now we find that the lowest cross-validation error occurs when $M=5$ components 
+are used. Let's compute the test MSE!
+```{r}
+pcr.pred <- predict(pcr.fit, x[test, ], ncomp = 7)
+mean((as.vector(pcr.pred) - y[test])^2)
+```
+The result is slightly better than lasso regression and slightly worse than 
+ridge regression.
+
+
+
+
