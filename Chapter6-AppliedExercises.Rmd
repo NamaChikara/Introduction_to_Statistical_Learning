@@ -13,6 +13,7 @@ number_sections: true
 knitr::opts_chunk$set(echo = TRUE)
 library(ISLR)
 library(dplyr)
+library(tibble)
 library(ggplot2)
 library(MASS) # for lda()
 library(class) # for knn()
@@ -454,6 +455,164 @@ The residuals are slightly heteroscedastic, but uncorrelated with mean close to 
 The lasso model appears to be a good fit for colleges where `Apps` is larger than
 2500, but poor for colleges where `Apps` is near zero.
 
+
+## Test vs. Training Error as features grow
+
+We have seen that as the number of features used in a model increases, the training 
+error will necessarily decrease, but the test error may not. We will now explore
+this in a simulated data set.
+
+a) Generate a data set with $p=20$ features, $n=1000$ observations, and an
+associated quantitative response vector generated according to the model 
+$$ Y = X\beta + \epsilon$$
+where $\beta$ has some elements that are exactly equal to zero.
+
+```{r}
+set.seed(7)
+
+p = 20
+n = 1000
+
+mydata <- matrix(rnorm(n * p), n, p)
+colnames(mydata) <- paste("x", seq(1, 20), sep = "")
+mydata <- as.data.frame(mydata) %>%
+  mutate(x2 = sqrt(abs(x2) + 0.001),
+         x3 = x3^2,
+         x4 = x4^3 / 200,
+         x7 = x7 * x2 / 10,
+         x9 = abs(x9) ^ (1/4),
+         x11 = x11 ^ (-1),
+         x12 = x9 * x11,
+         x13 = x2 / (x3 + 0.1),
+         x17 = rnorm(n, mean = 4, sd = 6),
+         x18 = x17 + runif(1000, -0.1, 0.1),
+         x19 = 3 * x3 + runif(1000, 4.5, 4.6)) %>%
+  as.matrix()
+
+B <- rnorm(p)
+B[c(1, 5, 6, 8, 10, 14, 17)] <- 0
+y <- mydata %*% B + rnorm(p)
+
+mydata <- as.data.frame(mydata) %>%
+  mutate(y = as.vector(y))
+```
+
+b) Split your data set into a training set containing 100 observations and a test
+set containing 900 observations.
+
+```{r}
+set <- sample(c("test", "train"), 1000, replace = T, prob = c(0.1, 0.9))
+train <- mydata[set == "train", ]
+test <- mydata[set == "test", ]
+```
+
+c) Perform best subset selection on the training set, and plot the training and
+test set MSE associated with the best model of each size.
+
+```{r}
+# Apply best subset selection.
+subset.fit <- regsubsets(
+  y ~ .,
+  data = train,
+  nvmax = 20
+)
+
+# Create a matrix of coefficients.
+coef <- matrix(0, nrow = 20, ncol = 21)
+var_names <- names(coef(subset.fit, 20))
+for (i in 1:20) {
+  coef_i <- coef(subset.fit, i)
+  coef[i, var_names %in% names(coef_i)] <- coef_i
+}
+colnames(coef) <- var_names
+
+# Turn the train and test sets into matrices, leading with a column of 1s
+# for the intercept term.
+train_mat <- matrix(c(rep(1, dim(train)[1]), as.matrix(select(train, -y))),
+                nrow = dim(train)[1], ncol = 21)
+test_mat <- matrix(c(rep(1, dim(test)[1]), as.matrix(select(test, -y))),
+                nrow = dim(test)[1], ncol = 21)
+
+# Estimate y for the training and test sets.
+train_est_y <- train_mat %*% t(coef)
+test_est_y <- test_mat %*% t(coef)
+
+# Calculate the MSE.
+train_mse <- apply(train_est_y, 2, function(est) { mean((est - train$y)^2) })
+test_mse <- apply(test_est_y, 2, function(est) { mean((est - test$y)^2) })
+
+# Plot the MSE.
+par(mfrow = c(1, 2))
+p <- data.frame(
+    train_mse = train_mse,
+    test_mse = test_mse,
+    feature_count = seq(1, 20)
+  ) %>%
+    ggplot(aes(x = feature_count)) 
+p +
+  geom_line(aes(y = train_mse)) +
+  geom_point(aes(y = train_mse)) +
+  labs(title = "train MSE")
+p + 
+  geom_line(aes(y = test_mse)) +
+  geom_point(aes(y = test_mse)) +
+  labs(title = "test MSE")
+par(mfrow = c(1, 1))
+```
+
+
+
+e) For which model size does the test set MSE take on its minimum value? 
+Comment on your results. If it takes on its minimum value for a model containing
+only an intercept or a model containing all of the features, then play around
+with the way you are generating the data in (a) until you come up with a scenario
+in which the test set MSE is minimized for an intermediate model size.
+
+```{r}
+which.min(test_mse)
+```
+The minimum test MSE is lower than the number of true nonzero variables (13), but
+seems to take into account that there are 3 pairs of highly correlated variables
+(so selecting one of each pair leads to a better result than keeping all 6).
+
+f) How does the model at which the test set MSE is minimized compare to the true
+model used to generate the data? Comment on the coefficient values.
+
+```{r}
+coef(subset.fit, which.min(test_mse))
+names(B) <- names(coef(subset.fit, 20))[-1]
+B
+```
+The coefficient values for the variables included in the 9-feature best subset
+model are very close to the true corresponding coefficient values.  Notably,
+`x3`, `x4`, `x7`, `x9` were all set to zero by the best subset model, but are 
+nonzero in the true model.  This makes sense for `x3` because it is constructed
+to be highly correlated with `x19`:
+```{r}
+cor(mydata$x3, mydata$x19)
+```
+
+
+
+mydata <- as.data.frame(mydata) %>%
+  mutate(x2 = sqrt(abs(x2) + 0.001),
+         x3 = x3^2,
+         x4 = x4^3 / 200,
+         x7 = x7 * x2 / 10,
+         x9 = abs(x9) ^ (1/4),
+         x11 = x11 ^ (-1),
+         x12 = x9 * x11,
+         x13 = x2 / (x3 + 0.1),
+         x17 = rnorm(n, mean = 4, sd = 6),
+         x18 = x17 + runif(1000, -0.1, 0.1),
+         x19 = 3 * x3 + runif(1000, 4.5, 4.6)) %>%
+  as.matrix()
+
+
+g) Create a plot displaying $\sqrt{\sum_{j=1}^p(\beta_j-\hat{\beta}_j^r)^2}$
+for a range of values of $r$, where $\hat{\beta}_j^r$ is the $j$th coefficient
+estimate for the best model containing $r$ coefficients. Comment on what you 
+observe. How does this compare to the test MSE plot from (d)?
 
 
 
