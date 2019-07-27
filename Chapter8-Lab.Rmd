@@ -1,0 +1,104 @@
+---
+title: "Chapter 7 Lab"
+author: "ZackBarry"
+date: "7/26/2019"
+output: 
+  html_document:
+  toc: true
+toc_depth: 2
+number_sections: true
+---
+  
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(ISLR)
+library(dplyr)
+library(tibble)
+library(ggplot2)
+library(MASS) # for lda()
+library(class) # for knn()
+library(boot) # for cv.glm() and boot()
+library(MVN)  # for checking for multivariate normal distributions
+# ^ need to install jags directly from 
+#    https://sourceforge.net/projects/mcmc-jags/files/JAGS/4.x/Mac%20OS%20X/
+#   before installing MVN
+library(leaps) # for regsubsets()
+library(glmnet)  # for glmnet() (ridge/lasso regression)
+library(pls)  # for pcr()
+library(rpart)
+library(rpart.plot)
+
+select <- dplyr::select # avoid namespace collision with MASS
+filter <- dplyr::filter  
+```
+
+## 1) Fitting Classification Trees
+
+We will be using the `rpart` library to construct the classification and regression
+trees, unlike the 2014 version of Introduction to Statistical Learning.
+
+We first use classification trees to analyze the `Carseats` data set. In these 
+data, `Sales` is a continuous variable, and so we begin by recoding it as a
+binary variable.  
+```{r}
+Carseats$High <- ifelse(Carseats$Sales <= 8, "No", "Yes")
+```
+
+We will now use the `rpart()` function to fit a classification tree in order to
+predict `High` using all variables but `Sales`.
+```{r}
+set.seed(2)
+
+tree.carseats <- rpart(
+  formula = High ~ . - Sales,
+  data = Carseats,
+  method = "class"
+)
+
+tree.carseats$variable.importance
+
+rpart.plot::rpart.plot(tree.carseats)
+```
+We can see from the plot that there are 11 terminal nodes. Look at the terminal 
+node on the far right, we see that it contains all points for which `ShelveLoc`
+is `Good` and `Price` is greater than 143. It contains 18% of the points in the
+training set, and 86% of those points have a response value of `High` that is
+`Yes`.
+
+Let's consider the training error rate by looking at the Pruning, or CP, Table:
+```{r}
+tree.carseats$cptable
+```
+`CP` is the complexity parameter (give the complexity
+of the tree model),
+`rel error` is the training error, `xerror` is the cross validation error.
+See https://cran.r-project.org/web/packages/rpart/vignettes/longintro.pdf for a guide to the `rpart` package.
+
+Let's see what the test error rate is like:
+```{r}
+set.seed(1)
+
+train <- sample(seq(1, nrow(Carseats)), 300)
+Carseats.train <- Carseats[train, ]
+Carseats.test <- Carseats[-train, ]
+
+Carseats.tree <- rpart(
+  High ~ . - Sales,
+  Carseats.train,
+  method = "class"
+)
+
+mean(Carseats.test$High == predict(Carseats.tree, Carseats.test, type = "class"))
+
+table(Carseats.test$High, predict(Carseats.tree, Carseats.test, type = "class"))
+```
+We have a 72% error rate with a confusion matrix that 
+indicates false negatives occur more often than false
+positives.
+
+
+
+
+
+
+
