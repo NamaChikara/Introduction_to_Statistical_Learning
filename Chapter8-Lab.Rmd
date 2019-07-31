@@ -65,14 +65,45 @@ is `Good` and `Price` is greater than 143. It contains 18% of the points in the
 training set, and 86% of those points have a response value of `High` that is
 `Yes`.
 
-Let's consider the training error rate by looking at the Pruning, or CP, Table:
+Let's consider the training error rate by looking at the CP Table:
 ```{r}
-tree.carseats$cptable
+printcp(tree.carseats)
 ```
 `CP` is the complexity parameter (give the complexity
-of the tree model),
-`rel error` is the training error, `xerror` is the cross validation error.
-See https://cran.r-project.org/web/packages/rpart/vignettes/longintro.pdf for a guide to the `rpart` package.
+of the tree model), `rel error` is the training error, `xerror` is the cross
+validation error, and `xstd` is the standard deviation of the cross validation 
+error. Note that each of these columns are scaled by a factor of $1 / \text{Root node error}$
+so that $\text{Root node error} \times \text{rel error} = \text{training error}$
+and $\text{Root node error} \times \text{x error} = \text{cv error}$.
+Note that root node error is the training error rate when no splits have
+been taken. See pages 15-16 at
+https://cran.r-project.org/web/packages/rpart/vignettes/longintro.pdf for a guide.
+
+A rule of thumb for selecting the best fit is to select the CP value corresponding
+to $\min(\text{nsplit}\colon \text{xerror}\in[\min(\text{xerror}) - \text{xstd}, \min(\text{xerror}) + \text{xstd}])$.
+The logic for this is that `xerror` often plateaus as `nsplit` gets large, but 
+larger trees have higher variance which increases the risk of overfitting.
+To balance these interests, selec the smallest tree within the plateau, defined 
+as a 1 standard deviation band around the smallest cross validation error.
+This idea is summed up in the cp plot:
+```{r}
+plotcp(tree.carseats)
+```
+The lowest (scaled) cross validation error occurs when there are 11 leaf
+nodes (10 splits), the dotted line is printed to be 1 standard deviation above
+this value.  In this case, it is at a height of $0.53049 + 0.050310$.  In the
+language of the above description, this line represents the top of the plateau.
+The smallest tree beneath this plateau is the one with 6 nodes (5 splits); it
+is that tree that we choose. This tree has a scaled CP value of $0.027439$
+and an absolute CP value of $0.41 \times 0.027439$.
+
+To extract the desired tree, call `prune` and pass it the absoluted CP value:
+```{r}
+fit5 <- prune(tree.carseats, cp = 0.027439 * 0.41)
+rpart.plot(fit5)
+```
+This is the same table as printing with `rpart.plot(tree.carseats)` - the best
+model accorinding to the plateau method is printed automatically.
 
 Let's see what the test error rate is like:
 ```{r}
@@ -88,17 +119,12 @@ Carseats.tree <- rpart(
   method = "class"
 )
 
-mean(Carseats.test$High == predict(Carseats.tree, Carseats.test, type = "class"))
-
-table(Carseats.test$High, predict(Carseats.tree, Carseats.test, type = "class"))
+printcp(Carseats.tree)
 ```
-We have a 72% error rate with a confusion matrix that 
+We have a 28% error rate with a confusion matrix that 
 indicates false negatives occur more often than false
-positives.
-
-
-
-
-
-
-
+positives. The best CP parameter is the one for `nsplit=4` since the top of the 
+plateau is $0.5837 + 0.06041 = 0.64578 > 0.63415$.
+```{r}
+plotcp(Carseats.tree)
+```
