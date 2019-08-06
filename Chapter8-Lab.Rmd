@@ -27,6 +27,9 @@ library(glmnet)  # for glmnet() (ridge/lasso regression)
 library(pls)  # for pcr()
 library(rpart)
 library(rpart.plot)
+library(parsnip) # API for rpart() and others, install_github("tidymodels/parsnip")
+library(randomForest)
+library(gbm)
 
 select <- dplyr::select # avoid namespace collision with MASS
 filter <- dplyr::filter  
@@ -128,3 +131,143 @@ plateau is $0.5837 + 0.06041 = 0.64578 > 0.63415$.
 ```{r}
 plotcp(Carseats.tree)
 ```
+
+
+### Using `parsnip`
+
+`Parsnip` is a tidy R package which aims to provide a standard API to different
+model fitting packages.  The flow is to call the model type 
+(e.g. `parsnip::logistic_reg()`), set the algorithm used to fit the model
+(e.g. `parsnip::set_engine("rpart", ...)`) (passing package-specific arguments
+through the elipses), and fit the model (`parsnip::fit(formula = , data = )`).
+The output is a a `parsnip` object (a list `PN`), but you can access the output as if it was
+created by the engine by accessing the `fit` element of the object, `PN$fit`.
+```{r}
+Carseats.train$High <- as.factor(Carseats.train$High)
+
+set.seed(1)
+
+Carseats.parsnip <-
+  decision_tree(mode = "classification") %>%
+  set_engine("rpart") %>%
+  fit(High ~ . - Sales, data = Carseats.train)
+
+printcp(Carseats.parsnip$fit)
+```
+
+```{r}
+mean(predict(Carseats.parsnip, Carseats.test) == Carseats.test$High)
+```
+
+The parsnip model also resulted in a 28% test error rate.
+
+
+## 3) Bagging and Random Forests
+
+Here we apply bagging and random forests to the `Boston` data, using the 
+`randomForest` package in `R`. Recall that bagged decision trees and random forests 
+both aim to reduce variance, and that bagged decision trees are a special case
+of random forests.  Bagging grows multiple fully grown trees on bootstrap samples
+of the training set and averages the results. Random forest does the same, but
+only a random subset of the overall features are available for splitting at each
+step.  When the size of this subset is set to be the total number of features,
+random forest becomes synonymous with bagging.
+
+When calling `rand_forest`, the parameter `mtry` is used to set the subset size.
+The `randomForest` engine has a default value of 1/3 the number of features
+for the regression case and $\sqrt{\text{# of features}}$ for the classification
+case. Below we create three model fits, a normal decision tree, a bagged
+decision tree, and a random forest.
+```{r}
+set.seed(1)
+
+set <- sample(c("train", "test"), size = nrow(Boston), replace = T, prob = c(0.8, 0.2))
+Boston.train <- Boston[set == "train", ]
+Boston.test <- Boston[set == "test", ]
+
+Boston.decision_tree <- 
+  decision_tree(mode = "regression") %>%
+  set_engine("rpart") %>%
+  fit(formula = medv ~ ., data = Boston.train) 
+
+Boston.decision_tree.test_error <- 
+  mean(as.vector(unlist((predict(Boston.decision_tree, Boston.test) - Boston.test$medv) ^ 2)))
+
+Boston.bagged <- 
+  rand_forest(mode = "regression", mtry = ncol(Boston)) %>%
+  set_engine("randomForest", importance = TRUE) %>%
+  fit(formula = medv ~ ., data = Boston.train)
+
+Boston.bagged.test_error <-
+  mean(as.vector(unlist((predict(Boston.bagged, Boston.test) - Boston.test$medv) ^ 2)))
+
+Boston.random_forest <- 
+  rand_forest(mode = "regression") %>%
+  set_engine("randomForest", importance = TRUE) %>%
+  fit(formula = medv ~ ., data = Boston.train)
+
+Boston.random_forest.test_error <-
+  mean(as.vector(unlist((predict(Boston.random_forest, Boston.test) - Boston.test$medv) ^ 2)))
+
+print(
+  data.frame(
+    model = c("decision tree", "bagging", "random forest"),
+    test_error = c(Boston.decision_tree.test_error, Boston.bagged.test_error, Boston.random_forest.test_error)
+  )
+)
+```
+
+We see that both bagging and random forest improved over the optimally-pruned
+single decision tree, but that bagging did better than random forest.  This is
+not necessarily suprising -- bagging has less bias than random forest since the
+number of predictors available for splitting is not restricted. It appears in this
+case that the variance reduct of moving from bagging to random forest did not
+make up for the increase in bias.
+
+We can also look at the variable importance for each model:
+```{r}
+decision_tree.imp <- as.data.frame(Boston.decision_tree$fit$variable.importance)
+colnames(decision_tree.imp) <- "decision.tree"
+decision_tree.imp <- mutate(decision_tree.imp, var = rownames(decision_tree.imp))
+bagged_tree.imp <- as.data.frame(Boston.bagged$fit$importance[,2])
+colnames(bagged_tree.imp) <- "bagged.tree"
+bagged_tree.imp <- mutate(bagged_tree.imp, var = rownames(bagged_tree.imp))
+rf.imp <- as.data.frame(Boston.random_forest$fit$importance[,2])
+colnames(rf.imp) <- "rf.tree"
+rf.imp <- mutate(rf.imp, var = rownames(rf.imp))
+
+full_join(full_join(decision_tree.imp, bagged_tree.imp), rf.imp) %>%
+  mutate(bagged.tree = bagged.tree / max(bagged.tree, na.rm = T),
+         decision.tree = decision.tree / max(decision.tree, na.rm = T),
+         rf.tree = rf.tree / max(rf.tree, na.rm = T)) %>%
+  arrange(desc(bagged.tree)) %>%
+  select(var, bagged.tree, rf.tree, decision.tree)
+```
+The three models each rank `rm` and `lstat` as the first and second most important 
+variables, but `indus` is seen as much more important by the random forest and
+pruned decision tree than by the bagged tree.
+
+
+## 4) Boosting
+
+For boosting we will use the `gbm` package.
+
+```{r}
+Boston.boost <- gbm(
+  medv ~ .,
+  data = Boston.train,
+  distribution = "gaussian",
+  n.trees = 5000,
+  interaction.depth = 4
+)
+
+mean((predict(Boston.boost, Boston.test, n.trees = 5000) - Boston.test$medv) ^ 2)
+
+summary(Boston.boost)
+```
+Boosting did better than the pruned tree and slightly better than random forest,
+but not as good as bagging.
+
+
+
+
